@@ -90,7 +90,7 @@ jobs:
             OBJROOT="$RUNNER_TEMP/firehose-obj" SYMROOT="$RUNNER_TEMP/firehose-sym" DSTROOT="$B2L_DEPSROOT" \
             CODE_SIGNING_ALLOWED=NO OTHER_CFLAGS='$(inherited) -mcpu=generic -march=armv8-a+crypto -D__improbable(x)=__builtin_expect(!!(x),0)' \
             HEADER_SEARCH_PATHS="$B2L_DEPSROOT/usr/local/include/kernel $B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders $SDK_INCLUDE $CLANG_INCLUDE $XNU_HEADERS $DISPATCH"
-          test -f "$B2L_DEPSROOT/usr/local/lib/kernel/liblibfirehose_kernel.a"
+          mkdir -p "$B2L_DEPSROOT/usr/local/lib/kernel" && cp "$RUNNER_TEMP/firehose-sym/Release-iphoneos/liblibfirehose_kernel.a" "$B2L_DEPSROOT/usr/local/lib/kernel/liblibfirehose_kernel.a" && test -s "$B2L_DEPSROOT/usr/local/lib/kernel/liblibfirehose_kernel.a"
 
       - name: Build iOS 15.6 Beyond1LTE kernel
         env:
