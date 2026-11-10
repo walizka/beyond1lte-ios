@@ -59,9 +59,11 @@ jobs:
           ditto "$KDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders" "$B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders"
           mkdir -p "$B2L_DEPSROOT/usr/local/include/kernel/os"
           cp "$GITHUB_WORKSPACE/xnu"/libkern/os/*.h "$B2L_DEPSROOT/usr/local/include/kernel/os/"
-          mkdir -p "$B2L_DEPSROOT/usr/local/include/kernel/kern" "$B2L_DEPSROOT/usr/local/include/kernel/mach"
+          mkdir -p "$B2L_DEPSROOT/usr/local/include/kernel/kern" "$B2L_DEPSROOT/usr/local/include/kernel/mach" "$B2L_DEPSROOT/usr/local/include/kernel/machine" "$B2L_DEPSROOT/usr/local/include/kernel/arm"
           cp "$GITHUB_WORKSPACE/xnu"/osfmk/kern/*.h "$B2L_DEPSROOT/usr/local/include/kernel/kern/"
           cp "$GITHUB_WORKSPACE/xnu"/osfmk/mach/*.h "$B2L_DEPSROOT/usr/local/include/kernel/mach/"
+          cp "$GITHUB_WORKSPACE/xnu"/osfmk/machine/*.h "$B2L_DEPSROOT/usr/local/include/kernel/machine/"
+          cp "$GITHUB_WORKSPACE/xnu"/osfmk/arm/*.h "$B2L_DEPSROOT/usr/local/include/kernel/arm/"
           D="$RUNNER_TEMP/libdispatch"
           git init -q "$D"
           git -C "$D" fetch -q --depth 1 https://github.com/apple-oss-distributions/libdispatch.git 701f4d1a24ae9c6863901bbbb22624b7d1b87321
