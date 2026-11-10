@@ -42,7 +42,7 @@ jobs:
           git init -q "$AV"
           git -C "$AV" fetch -q --depth 1 https://github.com/apple-oss-distributions/AvailabilityVersions.git 149b1777f3e8c2133042d8e188f72e3adf6a7110
           git -C "$AV" checkout -q FETCH_HEAD
-          cmake -S "$AV" -B "$RUNNER_TEMP/av-build" -DSRCROOT="$AV" -DDSTROOT="$B2L_DEPSROOT" -DOBJROOT="$RUNNER_TEMP/av-obj" -DSYMROOT="$RUNNER_TEMP/av-sym" -DSYSTEM_PREFIX="" -DINSTALL_KERNEL_HEADERS=0
+          cmake -S "$AV" -B "$RUNNER_TEMP/av-build" -DSRCROOT="$AV" -DDSTROOT="$B2L_DEPSROOT" -DOBJROOT="$RUNNER_TEMP/av-obj" -DSYMROOT="$RUNNER_TEMP/av-sym" -DSYSTEM_PREFIX="" -DINSTALL_KERNEL_HEADERS=0 -DAV_VERSION=25.5.0
           cmake --build "$RUNNER_TEMP/av-build" --parallel 2
           cmake --install "$RUNNER_TEMP/av-build"
           cp "$AV/availability.pl" "$B2L_DEPSROOT/usr/local/libexec/availability.pl"
