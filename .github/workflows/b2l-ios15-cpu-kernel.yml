@@ -1,0 +1,132 @@
+name: B2L iOS 15 CPU kernel build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/**']
+    paths:
+      - '.github/workflows/b2l-ios15-cpu-kernel.yml'
+      - 'scripts/**'
+      - 'patches/ios15/**'
+      - 'xnu-overlay/**'
+      - 'common/smp/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/b2l-ios15-cpu-kernel.yml'
+      - 'scripts/**'
+      
+      - 'patches/ios15/**'
+      - 'xnu-overlay/**'
+      - 'common/smp/**'
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Apple toolchain and matching host KDK
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk macosx --show-sdk-path
+          HOST_BUILD="$(sw_vers -buildVersion)"
+          python3 - "$HOST_BUILD" > "$RUNNER_TEMP/kdk-url" <<'PY'
+          import json, sys, urllib.request
+          host_build = sys.argv[1]
+          url = 'https://raw.githubusercontent.com/dortania/KdkSupportPkg/gh-pages/manifest.json'
+          entries = json.load(urllib.request.urlopen(url))
+          match = next((x for x in entries if x['build'] == host_build), None)
+          if match is None:
+              raise SystemExit(f'No KDK matches runner build {host_build}')
+          print(match['url'])
+          PY
+          curl -fL --retry 3 "$(cat "$RUNNER_TEMP/kdk-url")" -o "$RUNNER_TEMP/kdk.dmg"
+          mkdir -p "$RUNNER_TEMP/kdk-mount"
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/kdk-mount" "$RUNNER_TEMP/kdk.dmg"
+          for pkg in "$RUNNER_TEMP/kdk-mount"/*.pkg; do
+            [ -e "$pkg" ] || continue
+            sudo installer -pkg "$pkg" -target /
+          done
+          hdiutil detach "$RUNNER_TEMP/kdk-mount"
+          KDKROOT="$(find /Library/Developer/KDKs -maxdepth 1 -type d -name "*${HOST_BUILD}*.kdk" -print -quit)"
+          test -n "$KDKROOT"
+          echo "KDKROOT=$KDKROOT" >> "$GITHUB_ENV"
+
+      - name: Stage Apple availability tools
+        env:
+          B2L_DEPSROOT: ${{ runner.temp }}/b2l-deps
+        run: |
+          set -euo pipefail
+          mkdir -p "$B2L_DEPSROOT/usr/local/libexec"
+          AV="$RUNNER_TEMP/AvailabilityVersions"
+          git init -q "$AV"
+          git -C "$AV" fetch -q --depth 1 https://github.com/apple-oss-distributions/AvailabilityVersions.git 149b1777f3e8c2133042d8e188f72e3adf6a7110
+          git -C "$AV" checkout -q FETCH_HEAD
+          mkdir -p "$RUNNER_TEMP/av-obj"
+          cmake -S "$AV" -B "$RUNNER_TEMP/av-build" -DSRCROOT="$AV" -DDSTROOT="$B2L_DEPSROOT" -DOBJROOT="$RUNNER_TEMP/av-obj" -DSYMROOT="$RUNNER_TEMP/av-sym" -DSYSTEM_PREFIX="" -DINSTALL_KERNEL_HEADERS=0 -DAV_VERSION=25.5.0
+          cmake --build "$RUNNER_TEMP/av-build" --parallel 2
+          cmake --install "$RUNNER_TEMP/av-build"
+          test -x "$B2L_DEPSROOT/usr/local/libexec/availability.pl"
+
+      - name: Fetch and prepare iOS 15.6 XNU
+        env:
+          B2L_DEPSROOT: ${{ runner.temp }}/b2l-deps
+        run: |
+          set -euo pipefail
+          XNU_PATH="$GITHUB_WORKSPACE/xnu-ios15"
+          bash scripts/fetch-xnu-ios15.sh "$XNU_PATH"
+          bash scripts/prepare-xnu-ios15.sh "$XNU_PATH"
+          mkdir -p "$B2L_DEPSROOT/usr/local/libexec"
+          echo "B2L_DEPSROOT=$B2L_DEPSROOT" >> "$GITHUB_ENV"
+          echo "XNU_PATH=$XNU_PATH" >> "$GITHUB_ENV"
+
+      - name: Build kernel dependencies
+        env:
+          B2L_DEPSROOT: ${{ runner.temp }}/b2l-deps
+          XNU_PATH: ${{ github.workspace }}/xnu-ios15
+        run: |
+          set -euo pipefail
+          python3 scripts/stage-libpthread-ios15.py "$XNU_PATH"
+          python3 scripts/stage-bearssl-ios15.py "$XNU_PATH"
+
+          ditto "$KDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders" "$B2L_DEPSROOT/usr/local/include/kernel"
+          ditto "$KDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders" "$B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders"
+          DISPATCH="$RUNNER_TEMP/libdispatch"
+          git init -q "$DISPATCH"
+          git -C "$DISPATCH" fetch -q --depth 1 https://github.com/apple-oss-distributions/libdispatch.git libdispatch-1325.120.2
+          git -C "$DISPATCH" checkout -q FETCH_HEAD
+          SDK_INCLUDE="$(xcrun --sdk iphoneos --show-sdk-path)/usr/include"; CLANG_INCLUDE="$(xcrun --sdk iphoneos clang -print-resource-dir)/include"; XNU_HEADERS="$XNU_PATH/osfmk $XNU_PATH/bsd $XNU_PATH/libkern $XNU_PATH/iokit $XNU_PATH/libkern/firehose"
+          xcodebuild -project "$DISPATCH/libdispatch.xcodeproj" -target libfirehose_kernel -configuration Release -sdk iphoneos -arch arm64 IPHONEOS_DEPLOYMENT_TARGET=15.6 \
+            OBJROOT="$RUNNER_TEMP/firehose-obj" SYMROOT="$RUNNER_TEMP/firehose-sym" DSTROOT="$B2L_DEPSROOT" \
+            CODE_SIGNING_ALLOWED=NO OTHER_CFLAGS='$(inherited) -mcpu=generic -march=armv8-a+crypto -D__improbable(x)=__builtin_expect(!!(x),0)' \
+            HEADER_SEARCH_PATHS="$B2L_DEPSROOT/usr/local/include/kernel $B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders $SDK_INCLUDE $CLANG_INCLUDE $XNU_HEADERS $DISPATCH"
+          mkdir -p "$B2L_DEPSROOT/usr/local/lib/kernel" && cp "$RUNNER_TEMP/firehose-sym/Release-iphoneos/liblibfirehose_kernel.a" "$B2L_DEPSROOT/usr/local/lib/kernel/liblibfirehose_kernel.a" && test -s "$B2L_DEPSROOT/usr/local/lib/kernel/liblibfirehose_kernel.a"
+
+      - name: Build iOS 15.6 Beyond1LTE kernel
+        env:
+          BUILD_JOBS: '2'
+          BUILD_MEMORY_BYTES: '8589934592'
+          B2L_DEPSROOT: ${{ runner.temp }}/b2l-deps
+          XNU_PATH: ${{ github.workspace }}/xnu-ios15
+        run: |
+          set -euo pipefail
+          bash scripts/build-kernel-ios15.sh CWARNFLAGS=-w CXXWARNFLAGS=-w
+          mkdir -p out/ci-kernel-ios15
+          find out/xnu-ios15 -type f -name 'kernel.development' -exec cp -n '{}' out/ci-kernel-ios15/ \; 2>/dev/null || true
+          test -s out/ci-kernel-ios15/kernel.development
+          file out/ci-kernel-ios15/kernel.development
+          shasum -a 256 out/ci-kernel-ios15/kernel.development > out/ci-kernel-ios15/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beyond1lte-ios15-cpu-kernel-${{ github.run_id }}
+          path: out/ci-kernel-ios15/
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,2030 @@
+diff --git a/bsd/conf/Makefile.template b/bsd/conf/Makefile.template
+index d9ba8ef..6a06bf6 100644
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -44,6 +44,15 @@ CFLAGS+= -include meta_features.h -DDRIVER_PRIVATE \
+         -Warray-bounds-pointer-arithmetic
+ SFLAGS+= -include meta_features.h
+ 
++# Only B2L embeds the immutable OSS pthread provider; other targets use a kext.
++ifeq ($(CURRENT_MACHINE_CONFIG),B2L)
++B2L_PTHREAD_ROOT = $(SRCROOT)/bsd/pthread/b2l_libpthread
++B2L_PTHREAD_INC = -I$(B2L_PTHREAD_ROOT) -I$(B2L_PTHREAD_ROOT)/private -I$(B2L_PTHREAD_ROOT)/include
++b2l_pthread_init.o_INCFLAGS = $(B2L_PTHREAD_INC)
++b2l_pthread_support.o_INCFLAGS = $(B2L_PTHREAD_INC)
++b2l_pthread_synch.o_INCFLAGS = $(B2L_PTHREAD_INC)
++endif
++
+ #
+ # Directories for mig generated files
+ #
+diff --git a/bsd/conf/files b/bsd/conf/files
+index b21b6ea..0e1b908 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -152,6 +152,9 @@ bsd/dev/dtrace/fasttrap.c		optional config_dtrace
+ bsd/dev/random/randomdev.c		standard
+ 
+ bsd/dev/memdev.c			standard
++bsd/dev/b2l_ufs_core.c			optional b2l
++bsd/dev/b2l_ufs_disk.c			optional b2l
++bsd/dev/b2l_ufs_transport.c		optional b2l
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+@@ -417,6 +420,9 @@ bsd/security/audit/audit_syscalls.c		standard
+ bsd/security/audit/audit_worker.c		optional config_audit
+ 
+ bsd/pthread/pthread_shims.c		standard
++bsd/pthread/b2l_pthread_init.c		optional b2l
++bsd/pthread/b2l_pthread_support.c		optional b2l
++bsd/pthread/b2l_pthread_synch.c		optional b2l
+ bsd/pthread/pthread_priority.c		standard
+ bsd/pthread/pthread_workqueue.c		standard
+ 
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index f23bfbc..5b80645 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1074,6 +1074,12 @@ bsd_autoconf(void)
+ 		}
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* Native read-only UFS discovery; does not change root selection. */
++	extern void b2l_ufs_disk_init(void);
++	b2l_ufs_disk_init();
++#endif
++
+ 	return IOKitBSDInit();
+ }
+ 
+diff --git a/bsd/sys/make_symbol_aliasing.sh b/bsd/sys/make_symbol_aliasing.sh
+index 24fb244..5eb9d3a 100755
+--- a/bsd/sys/make_symbol_aliasing.sh
++++ b/bsd/sys/make_symbol_aliasing.sh
+@@ -34,7 +34,7 @@ fi
+ SDKROOT="$1"
+ OUTPUT="$2"
+ 
+-AVAILABILITY_PL="${SDKROOT}/${DRIVERKITROOT}/usr/local/libexec/availability.pl"
++AVAILABILITY_PL="${B2L_DEPSROOT:-${SDKROOT}/${DRIVERKITROOT}}/usr/local/libexec/availability.pl"
+ 
+ if [ ! -x "${AVAILABILITY_PL}" ] ; then
+     echo "Unable to locate ${AVAILABILITY_PL} (or not executable)" >&2
+diff --git a/bsd/sys/pthread_internal.h b/bsd/sys/pthread_internal.h
+index 42e23d8..c400998 100644
+--- a/bsd/sys/pthread_internal.h
++++ b/bsd/sys/pthread_internal.h
+@@ -34,7 +34,12 @@
+ 
+ struct ksyn_waitq_element {
+ #if __LP64__
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* libpthread-539.100.4: trailing kwe_uth at offset 48. */
++	char opaque[56] __attribute__((aligned(8)));
++#else
+ 	char opaque[48];
++#endif
+ #else
+ 	char opaque[32];
+ #endif
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 2b14eda..956c733 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -32,8 +32,23 @@
+  * Version 2.0.
+  */
+ 
++#include <pexpert/arm64/board_config.h>
++
+ const char * gIOKernelConfigTables =
+     "("
++#if defined(B2L)
++    "   {"
++    "     'IOClass' = B2LPlatformExpert;"
++    "     'IOProviderClass' = IOPlatformExpertDevice;"
++    "     'IONameMatch' = 'samsung,beyond2lte';"
++    "     'IOProbeScore' = 10000:32;"
++    "   },"
++    "   {"
++    "     'IOClass' = B2LCPU;"
++    "     'IOProviderClass' = IOPlatformDevice;"
++    "     'IONameMatch' = 'b2l,boot-cpu';"
++    "   },"
++#endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"
+     "     'IOProviderClass' = IOPlatformExpertDevice;"
+diff --git a/iokit/conf/files b/iokit/conf/files
+index 039641d..38f131d 100644
+--- a/iokit/conf/files
++++ b/iokit/conf/files
+@@ -144,3 +144,8 @@ iokit/Kernel/IOPerfControl.cpp		optional iokitcpp
+ 
+ # Skywalk
+ iokit/bsddev/skywalk/IOSkywalkSupport.cpp		optional iokitcpp skywalk
++
++# Exynos 9820 first-boot platform
++OPTIONS/b2l optional b2l
++iokit/Kernel/arm/B2LPlatformExpert.cpp optional iokitcpp b2l
++iokit/Kernel/arm/B2LCPU.cpp optional iokitcpp b2l
+diff --git a/libkern/conf/Makefile.template b/libkern/conf/Makefile.template
+index f0c8a72..614f805 100644
+--- a/libkern/conf/Makefile.template
++++ b/libkern/conf/Makefile.template
+@@ -19,6 +19,14 @@ include $(MakeInc_def)
+ CFLAGS+= -include meta_features.h -DLIBKERN_KERNEL_PRIVATE -DOSALLOCDEBUG=1
+ SFLAGS+= -include meta_features.h
+ 
++ifeq ($(CURRENT_MACHINE_CONFIG),B2L)
++B2L_AES_ROOT = $(SRCROOT)/libkern/crypto/b2l_bearssl
++B2L_AES_OBJECTS = b2l_aes.o b2l_aes_ct.o b2l_aes_ct_enc.o b2l_aes_ct_dec.o b2l_aes_ct_cbcenc.o b2l_aes_ct_cbcdec.o
++$(foreach object,$(B2L_AES_OBJECTS),$(eval $(object)_INCFLAGS = -I$(B2L_AES_ROOT)/inc -I$(B2L_AES_ROOT)/src))
++$(foreach object,$(B2L_AES_OBJECTS) corecrypto_aes.o,$(eval $(object)_CFLAGS_ADD += -mgeneral-regs-only))
++endif
++
++
+ # Runtime support functions don't interact well with LTO (9294679)
+ stack_protector.o_CFLAGS_ADD += $(CFLAGS_NOLTO_FLAG)
+ 
+diff --git a/libkern/conf/files b/libkern/conf/files
+index 626ad08..36b97d5 100644
+--- a/libkern/conf/files
++++ b/libkern/conf/files
+@@ -96,6 +96,12 @@ libkern/crypto/corecrypto_sha1.c		optional crypto
+ libkern/crypto/corecrypto_md5.c			optional crypto
+ libkern/crypto/corecrypto_des.c			optional crypto
+ libkern/crypto/corecrypto_aes.c			optional crypto
++libkern/crypto/b2l_aes.c	optional b2l
++libkern/crypto/b2l_aes_ct.c	optional b2l
++libkern/crypto/b2l_aes_ct_enc.c	optional b2l
++libkern/crypto/b2l_aes_ct_dec.c	optional b2l
++libkern/crypto/b2l_aes_ct_cbcenc.c	optional b2l
++libkern/crypto/b2l_aes_ct_cbcdec.c	optional b2l
+ libkern/crypto/corecrypto_aesxts.c		optional crypto
+ libkern/crypto/corecrypto_rand.c		optional crypto
+ libkern/crypto/corecrypto_rsa.c		    optional crypto
+diff --git a/libkern/crypto/corecrypto_aes.c b/libkern/crypto/corecrypto_aes.c
+index 20ff4f1..6417338 100644
+--- a/libkern/crypto/corecrypto_aes.c
++++ b/libkern/crypto/corecrypto_aes.c
+@@ -32,10 +32,40 @@
+ #include <corecrypto/ccaes.h>
+ #include <kern/debug.h>
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Real portable legacy CBC/ECB modes; no partial global crypto table. */
++extern const struct ccmode_cbc b2l_aes_cbc_encrypt;
++extern const struct ccmode_cbc b2l_aes_cbc_decrypt;
++#define AES_CBC_ENCRYPT_MODE (&b2l_aes_cbc_encrypt)
++#define AES_CBC_DECRYPT_MODE (&b2l_aes_cbc_decrypt)
++/* GCM remains unsupported without a complete real mode. Every legacy API
++ * must decline before reading a missing table or mode callback. */
++static const struct ccmode_gcm *
++b2l_aes_gcm_mode(const struct ccmode_gcm *mode)
++{
++	return mode != NULL && mode->size != 0 && mode->block_size != 0 &&
++	       mode->init != NULL && mode->set_iv != NULL && mode->gmac != NULL &&
++	       mode->gcm != NULL && mode->finalize != NULL && mode->reset != NULL ? mode : NULL;
++}
++#define AES_GCM_ENCRYPT_MODE b2l_aes_gcm_mode(g_crypto_funcs == NULL ? NULL : g_crypto_funcs->ccaes_gcm_encrypt)
++#define AES_GCM_DECRYPT_MODE b2l_aes_gcm_mode(g_crypto_funcs == NULL ? NULL : g_crypto_funcs->ccaes_gcm_decrypt)
++#else
++#define AES_CBC_ENCRYPT_MODE (g_crypto_funcs->ccaes_cbc_encrypt)
++#define AES_CBC_DECRYPT_MODE (g_crypto_funcs->ccaes_cbc_decrypt)
++#define AES_GCM_ENCRYPT_MODE (g_crypto_funcs->ccaes_gcm_encrypt)
++#define AES_GCM_DECRYPT_MODE (g_crypto_funcs->ccaes_gcm_decrypt)
++#endif
++
+ aes_rval
+ aes_encrypt_key(const unsigned char *key, int key_len, aes_encrypt_ctx cx[1])
+ {
+-	const struct ccmode_cbc *cbc = g_crypto_funcs->ccaes_cbc_encrypt;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (cx == NULL) return aes_error;
++	/* The legacy API accepts exactly 128/192/256 bits or 16/24/32 bytes. */
++	if (key_len == 128 || key_len == 192 || key_len == 256) key_len /= 8;
++#endif
++
++	const struct ccmode_cbc *cbc = AES_CBC_ENCRYPT_MODE;
+ 
+ 	/* Make sure the context size for the mode fits in the one we have */
+ 	if (cbc->size > sizeof(aes_encrypt_ctx)) {
+@@ -49,7 +79,11 @@ aes_rval
+ aes_encrypt_cbc(const unsigned char *in_blk, const unsigned char *in_iv, unsigned int num_blk,
+     unsigned char *out_blk, aes_encrypt_ctx cx[1])
+ {
+-	const struct ccmode_cbc *cbc = g_crypto_funcs->ccaes_cbc_encrypt;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (cx == NULL) return aes_error;
++#endif
++
++	const struct ccmode_cbc *cbc = AES_CBC_ENCRYPT_MODE;
+ 	cccbc_iv_decl(cbc->block_size, ctx_iv);
+ 
+ 	int rc = cccbc_set_iv(cbc, ctx_iv, in_iv);
+@@ -72,7 +106,13 @@ aes_encrypt(const unsigned char *in_blk, unsigned char *out_blk, aes_encrypt_ctx
+ aes_rval
+ aes_decrypt_key(const unsigned char *key, int key_len, aes_decrypt_ctx cx[1])
+ {
+-	const struct ccmode_cbc *cbc = g_crypto_funcs->ccaes_cbc_decrypt;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (cx == NULL) return aes_error;
++	/* The legacy API accepts exactly 128/192/256 bits or 16/24/32 bytes. */
++	if (key_len == 128 || key_len == 192 || key_len == 256) key_len /= 8;
++#endif
++
++	const struct ccmode_cbc *cbc = AES_CBC_DECRYPT_MODE;
+ 
+ 	/* Make sure the context size for the mode fits in the one we have */
+ 	if (cbc->size > sizeof(aes_decrypt_ctx)) {
+@@ -86,7 +126,11 @@ aes_rval
+ aes_decrypt_cbc(const unsigned char *in_blk, const unsigned char *in_iv, unsigned int num_blk,
+     unsigned char *out_blk, aes_decrypt_ctx cx[1])
+ {
+-	const struct ccmode_cbc *cbc = g_crypto_funcs->ccaes_cbc_decrypt;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (cx == NULL) return aes_error;
++#endif
++
++	const struct ccmode_cbc *cbc = AES_CBC_DECRYPT_MODE;
+ 	cccbc_iv_decl(cbc->block_size, ctx_iv);
+ 
+ 	int rc = cccbc_set_iv(cbc, ctx_iv, in_iv);
+@@ -134,7 +178,7 @@ aes_decrypt_key256(const unsigned char *key, aes_decrypt_ctx cx[1])
+ aes_rval
+ aes_encrypt_key_gcm(const unsigned char *key, int key_len, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -145,18 +189,21 @@ aes_encrypt_key_gcm(const unsigned char *key, int key_len, ccgcm_ctx *ctx)
+ aes_rval
+ aes_encrypt_key_with_iv_gcm(const unsigned char *key, int key_len, const unsigned char *in_iv, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+ 
++	#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs->ccgcm_init_with_iv_fn == NULL) return aes_error;
++#endif
+ 	return g_crypto_funcs->ccgcm_init_with_iv_fn(gcm, ctx, key_len, key, in_iv);
+ }
+ 
+ aes_rval
+ aes_encrypt_set_iv_gcm(const unsigned char *in_iv, unsigned int len, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -167,7 +214,7 @@ aes_encrypt_set_iv_gcm(const unsigned char *in_iv, unsigned int len, ccgcm_ctx *
+ aes_rval
+ aes_encrypt_reset_gcm(ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -178,18 +225,21 @@ aes_encrypt_reset_gcm(ccgcm_ctx *ctx)
+ aes_rval
+ aes_encrypt_inc_iv_gcm(unsigned char *out_iv, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+ 
++	#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs->ccgcm_inc_iv_fn == NULL) return aes_error;
++#endif
+ 	return g_crypto_funcs->ccgcm_inc_iv_fn(gcm, ctx, out_iv);
+ }
+ 
+ aes_rval
+ aes_encrypt_aad_gcm(const unsigned char *aad, unsigned int aad_bytes, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -201,7 +251,7 @@ aes_rval
+ aes_encrypt_gcm(const unsigned char *in_blk, unsigned int num_bytes,
+     unsigned char *out_blk, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -212,7 +262,7 @@ aes_encrypt_gcm(const unsigned char *in_blk, unsigned int num_bytes,
+ aes_rval
+ aes_encrypt_finalize_gcm(unsigned char *tag, size_t tag_bytes, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -228,7 +278,7 @@ aes_encrypt_finalize_gcm(unsigned char *tag, size_t tag_bytes, ccgcm_ctx *ctx)
+ aes_rval
+ aes_decrypt_key_gcm(const unsigned char *key, int key_len, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -239,18 +289,21 @@ aes_decrypt_key_gcm(const unsigned char *key, int key_len, ccgcm_ctx *ctx)
+ aes_rval
+ aes_decrypt_key_with_iv_gcm(const unsigned char *key, int key_len, const unsigned char *in_iv, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+ 
++	#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs->ccgcm_init_with_iv_fn == NULL) return aes_error;
++#endif
+ 	return g_crypto_funcs->ccgcm_init_with_iv_fn(gcm, ctx, key_len, key, in_iv);
+ }
+ 
+ aes_rval
+ aes_decrypt_set_iv_gcm(const unsigned char *in_iv, size_t len, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -266,7 +319,7 @@ aes_decrypt_set_iv_gcm(const unsigned char *in_iv, size_t len, ccgcm_ctx *ctx)
+ aes_rval
+ aes_decrypt_reset_gcm(ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -277,18 +330,21 @@ aes_decrypt_reset_gcm(ccgcm_ctx *ctx)
+ aes_rval
+ aes_decrypt_inc_iv_gcm(unsigned char *out_iv, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+ 
++	#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs->ccgcm_inc_iv_fn == NULL) return aes_error;
++#endif
+ 	return g_crypto_funcs->ccgcm_inc_iv_fn(gcm, ctx, out_iv);
+ }
+ 
+ aes_rval
+ aes_decrypt_aad_gcm(const unsigned char *aad, unsigned int aad_bytes, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -300,7 +356,7 @@ aes_rval
+ aes_decrypt_gcm(const unsigned char *in_blk, unsigned int num_bytes,
+     unsigned char *out_blk, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -311,7 +367,7 @@ aes_decrypt_gcm(const unsigned char *in_blk, unsigned int num_bytes,
+ aes_rval
+ aes_decrypt_finalize_gcm(unsigned char *tag, size_t tag_bytes, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -327,7 +383,7 @@ aes_decrypt_finalize_gcm(unsigned char *tag, size_t tag_bytes, ccgcm_ctx *ctx)
+ size_t
+ aes_encrypt_get_ctx_size_gcm(void)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return 0;
+ 	}
+@@ -337,7 +393,7 @@ aes_encrypt_get_ctx_size_gcm(void)
+ size_t
+ aes_decrypt_get_ctx_size_gcm(void)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return 0;
+ 	}
+diff --git a/libkern/crypto/corecrypto_rand.c b/libkern/crypto/corecrypto_rand.c
+index 4a0bb24..458b9a9 100644
+--- a/libkern/crypto/corecrypto_rand.c
++++ b/libkern/crypto/corecrypto_rand.c
+@@ -29,6 +29,14 @@
+ #include <libkern/crypto/crypto_internal.h>
+ #include <corecrypto/ccrng.h>
+ #include <libkern/crypto/rand.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <sys/random.h>
++/* Internal XNU declaration from kern/misc_protos.h, not exported to libkern. */
++extern uint64_t early_random(void);
++#include <limits.h>
++#include <kern/assert.h>
++#include "b2l_kmem_random.h"
++#endif
+ 
+ int
+ cc_rand_generate(void *out, size_t outlen)
+@@ -43,6 +51,19 @@ cc_rand_generate(void *out, size_t outlen)
+ 		}
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs == NULL) {
++		/* Genuine boot-seeded early DRBG, then the registered kernel DRBG. */
++		uint8_t *cursor = out;
++		while (outlen != 0) {
++			u_int chunk = outlen > UINT_MAX ? UINT_MAX : (u_int)outlen;
++			read_frandom(cursor, chunk);
++			cursor += chunk;
++			outlen -= chunk;
++		}
++		return 0;
++	}
++#endif
+ 	return error;
+ }
+ 
+diff --git a/libkern/crypto/corecrypto_sha2.c b/libkern/crypto/corecrypto_sha2.c
+index 7392f0c..d06360b 100644
+--- a/libkern/crypto/corecrypto_sha2.c
++++ b/libkern/crypto/corecrypto_sha2.c
+@@ -31,6 +31,9 @@
+ #include <libkern/libkern.h>
+ #include <kern/debug.h>
+ #include <corecrypto/ccdigest.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <corecrypto/ccsha2.h>
++#endif
+ 
+ #if defined(CRYPTO_SHA2)
+ 
+@@ -38,30 +41,50 @@ void
+ SHA256_Init(SHA256_CTX *ctx)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha256_ltc_di : g_crypto_funcs->ccsha256_di;
++#else
+ 	di = g_crypto_funcs->ccsha256_di;
++#endif
+ 
+ 	/* Make sure the context size for the digest info fits in the one we have */
+ 	if (ccdigest_di_size(di) > sizeof(SHA256_CTX)) {
+ 		panic("%s: inconsistent size for SHA256 context", __FUNCTION__);
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	ccdigest_init(di, ctx->ctx);
++#else
+ 	g_crypto_funcs->ccdigest_init_fn(di, ctx->ctx);
++#endif
+ }
+ 
+ void
+ SHA256_Update(SHA256_CTX *ctx, const void *data, size_t len)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha256_ltc_di : g_crypto_funcs->ccsha256_di;
++#else
+ 	di = g_crypto_funcs->ccsha256_di;
++#endif
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	ccdigest_update(di, ctx->ctx, len, data);
++#else
+ 	g_crypto_funcs->ccdigest_update_fn(di, ctx->ctx, len, data);
++#endif
+ }
+ 
+ void
+ SHA256_Final(void *digest, SHA256_CTX *ctx)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha256_ltc_di : g_crypto_funcs->ccsha256_di;
++#else
+ 	di = g_crypto_funcs->ccsha256_di;
++#endif
+ 
+ 	ccdigest_final(di, ctx->ctx, digest);
+ }
+@@ -103,30 +126,50 @@ void
+ SHA512_Init(SHA512_CTX *ctx)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha512_ltc_di : g_crypto_funcs->ccsha512_di;
++#else
+ 	di = g_crypto_funcs->ccsha512_di;
++#endif
+ 
+ 	/* Make sure the context size for the digest info fits in the one we have */
+ 	if (ccdigest_di_size(di) > sizeof(SHA512_CTX)) {
+ 		panic("%s: inconsistent size for SHA512 context", __FUNCTION__);
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	ccdigest_init(di, ctx->ctx);
++#else
+ 	g_crypto_funcs->ccdigest_init_fn(di, ctx->ctx);
++#endif
+ }
+ 
+ void
+ SHA512_Update(SHA512_CTX *ctx, const void *data, size_t len)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha512_ltc_di : g_crypto_funcs->ccsha512_di;
++#else
+ 	di = g_crypto_funcs->ccsha512_di;
++#endif
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	ccdigest_update(di, ctx->ctx, len, data);
++#else
+ 	g_crypto_funcs->ccdigest_update_fn(di, ctx->ctx, len, data);
++#endif
+ }
+ 
+ void
+ SHA512_Final(void *digest, SHA512_CTX *ctx)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha512_ltc_di : g_crypto_funcs->ccsha512_di;
++#else
+ 	di = g_crypto_funcs->ccsha512_di;
++#endif
+ 
+ 	ccdigest_final(di, ctx->ctx, digest);
+ }
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+index 5f16e91..dc9f2b3 100644
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -32,7 +32,7 @@ SUPPORTED_ARM_MACHINE_CONFIGS = NONE
+ SUPPORTED_ARM64_MACHINE_CONFIGS = NONE
+ else
+ SUPPORTED_ARM_MACHINE_CONFIGS = NONE
+-SUPPORTED_ARM64_MACHINE_CONFIGS = BCM2837 T6000 T8101 VMAPPLE
++SUPPORTED_ARM64_MACHINE_CONFIGS = BCM2837 B2L T6000 T8101 VMAPPLE
+ 
+ endif
+ 
+@@ -63,2 +63,3 @@
+ MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
++MACHINE_FLAGS_ARM64_B2L = -DARM64_BOARD_CONFIG_B2L -DB2L -DAPPLE_ARM64_ARCH_FAMILY -D__ARM_VMSA__=8 -march=armv8-a+crypto
+ 
+
+@@ -92,6 +92,6 @@ else ifneq ($(filter $(SUPPORTED_SIMULATOR_PLATFORMS),$(PLATFORM)),)
+     DEPLOYMENT_TARGET_FLAGS =
+     DEPLOYMENT_LINKER_FLAGS =
+ else
+     DEPLOYMENT_TARGET_FLAGS =
+     DEPLOYMENT_LINKER_FLAGS =
+ endif
+@@ -248,10 +250,12 @@ else
+ # Without embdedded device map, use a default arch string
+ export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := $(shell echo $(CURRENT_ARCH_CONFIG) | tr A-Z a-z)
+ ifneq ($(filter ARM64,$(CURRENT_ARCH_CONFIG)),)
++ifneq ($(CURRENT_MACHINE_CONFIG),B2L)
+ export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e
+ endif
+ endif
+ endif
++endif
+ 
+ #
+ # This can have false negatives, and is used to avoid calling CTF when we'll build a static KC
+@@ -791,6 +795,9 @@ LDFLAGS_KERNEL_GENARM64 = \
+ 	-Wl,-rename_section,__HIB,__text,__TEXT_EXEC,__hib_text \
+ 	\
+ 	-Wl,-rename_section,__HIB,__const,__DATA_CONST,__hib_const \
++	$(if $(B2L_DEPSROOT),-L$(B2L_DEPSROOT)/usr/local/lib/kernel,) \
++	$(if $(B2L_DEPSROOT),,) \
++	$(if $(B2L_DEPSROOT),,) \
+ 	-Wl,-rename_section,__HIB,__cstring,__DATA_CONST,__hib_const \
+ 	-Wl,-rename_section,__HIB,__literal8,__DATA_CONST,__hib_const \
+ 	-Wl,-rename_section,__HIB,__literal16,__DATA_CONST,__hib_const \
+@@ -878,7 +885,7 @@ LDFILES_KERNEL_ONLY = $(TARGET)/all-kpi.exp $(TARGET)/all-alias.exp $(TARGET)/sy
+ LD_KERNEL_LIBS	   = -lcc_kext
+ LD_KERNEL_ARCHIVES = $(LDFLAGS_KERNEL_SDK) -lfirehose_kernel
+ # Link opensource binary library
+-ifneq ($(filter T6000 T8101 VMAPPLE T6000 T8101 VMAPPLE,$(CURRENT_MACHINE_CONFIG)),)
++ifneq ($(filter T6000 T8101 VMAPPLE,$(CURRENT_MACHINE_CONFIG)),)
+ 	LDFLAGS_KERNEL_ONLY += -rdynamic -Wl,-force_load,$(KDKROOT)/System/Library/KernelSupport/lib$(CURRENT_MACHINE_CONFIG).os.$(CURRENT_KERNEL_CONFIG).a
+ endif
+ 
+@@ -1074,6 +1081,11 @@ KERNEL_ONLY_GUARDS_UNIFDEF =
+ 
+ SPINCFRAME_UNIFDEF  = $(PLATFORM_UNIFDEF) $(XNU_PRIVATE_UNIFDEF) $(SEED_DEFINES) -UKERNEL_PRIVATE -UKERNEL -DPRIVATE -UDRIVERKIT -U_OPEN_SOURCE_ -U__OPEN_SOURCE__ $(KERNEL_ONLY_GUARDS_UNIFDEF)
+ SINCFRAME_UNIFDEF   = $(PLATFORM_UNIFDEF) $(XNU_PRIVATE_UNIFDEF) $(SEED_DEFINES) -UKERNEL_PRIVATE -UKERNEL -UPRIVATE -UDRIVERKIT -D_OPEN_SOURCE_ -D__OPEN_SOURCE__ $(KERNEL_ONLY_GUARDS_UNIFDEF)
++ifeq ($(CURRENT_MACHINE_CONFIG),B2L)
++XNU_CONFIG_TIGHTBEAM := 0
++LDFLAGS_KERNEL_ONLY += -Wl,-no_fixup_chains
++endif
++
+ DKPINCFRAME_UNIFDEF = $(PLATFORM_UNIFDEF) $(XNU_PRIVATE_UNIFDEF) $(SEED_DEFINES) -UKERNEL_PRIVATE -UKERNEL -DPRIVATE -DDRIVERKIT -U_OPEN_SOURCE_ -U__OPEN_SOURCE__ $(KERNEL_ONLY_GUARDS_UNIFDEF)
+ DKINCFRAME_UNIFDEF  = $(PLATFORM_UNIFDEF) $(XNU_PRIVATE_UNIFDEF) $(SEED_DEFINES) -UKERNEL_PRIVATE -UKERNEL -UPRIVATE -DDRIVERKIT -D_OPEN_SOURCE_ -D__OPEN_SOURCE__ $(KERNEL_ONLY_GUARDS_UNIFDEF)
+ KPINCFRAME_UNIFDEF  = $(PLATFORM_UNIFDEF) $(XNU_PRIVATE_UNIFDEF) $(SEED_DEFINES) -DKERNEL_PRIVATE -DKERNEL -DPRIVATE -UDRIVERKIT -U_OPEN_SOURCE_ -U__OPEN_SOURCE__
+@@ -1106,6 +1118,9 @@ DSYMUTIL_FLAGS_X86_64	= --arch=x86_64
+ DSYMUTIL_FLAGS_X86_64H	= --arch=x86_64h
+ DSYMUTIL_FLAGS_ARM	= --arch=arm
+ DSYMUTIL_FLAGS_ARM64	=
++ifneq ($(B2L_DEPSROOT),)
++INCFLAGS_SDK := -I$(B2L_DEPSROOT)/usr/local/include/kernel $(INCFLAGS_SDK)
++endif
+ 
+ DSYMUTIL_FLAGS = $(DSYMUTIL_FLAGS_GEN) \
+ 	$($(addsuffix $(CURRENT_ARCH_CONFIG),DSYMUTIL_FLAGS_))
+@@ -307,7 +307,6 @@ CFLAGS_GEN = $(DEBUG_CFLAGS) -nostdinc \
+ 	-ferror-limit=10000 \
+ 	-fno-builtin \
+ 	-fno-common \
+ 	-ftrivial-auto-var-init=zero \
+-	-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang \
+ 	-fsigned-bitfields \
+ 	-fmerge-all-constants \
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+index 3c93b1c..0f47568 100644
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -77,6 +77,7 @@
+ #include <pexpert/pexpert.h>
+ 
+ #include <console/serial_protos.h>
++#include <arm64/b2l_early.h>
+ 
+ #if CONFIG_TELEMETRY
+ #include <kern/telemetry.h>
+@@ -344,8 +345,15 @@ arm_init(
+ 
+ 	arm_setup_pre_sign();
+ 
++#if defined(B2L)
++	b2l_early_init(args);
++	b2l_early_mark(1, "rebasing kernel");
++#endif
+ 	arm_slide_rebase_and_sign_image();
+ 
++#if defined(B2L)
++	b2l_early_mark(2, "static branch initialization");
++#endif
+ 	/* If kernel integrity is supported, use a constant copy of the boot args. */
+ 	const_boot_args = *args;
+ 	BootArgs = args = &const_boot_args;
+@@ -357,7 +365,13 @@ arm_init(
+ 	BootCpuData.jop_key = ml_default_jop_pid();
+ #endif /* defined(HAS_APPLE_PAC) */
+ 
++#if defined(B2L)
++	b2l_early_mark(3, "platform initialization");
++#endif
+ 	PE_init_platform(FALSE, args); /* Get platform expert set up */
++#if defined(B2L)
++	b2l_early_mark(4, "platform initialized");
++#endif
+ 
+ #if __arm64__
+ 	configure_timer_apple_regs();
+@@ -399,6 +413,9 @@ arm_init(
+ 	}
+ #endif
+ 
++#if defined(B2L)
++	b2l_early_mark(5, "CPU topology");
++#endif
+ 	ml_parse_cpu_topology();
+ 
+ 
+@@ -453,6 +470,9 @@ arm_init(
+ 	rtclock_early_init();
+ 
+ 	kernel_debug_string_early("kernel_startup_bootstrap");
++#if defined(B2L)
++	b2l_early_mark(6, "kernel startup bootstrap");
++#endif
+ 	kernel_startup_bootstrap();
+ 
+ 	/*
+@@ -503,7 +523,14 @@ arm_init(
+ 	__builtin_arm_wsr("pan", 1);
+ #endif  /* __ARM_PAN_AVAILABLE__ */
+ 
++#if defined(B2L)
++	b2l_early_mark(7, "entering arm_vm_init");
++#endif
+ 	arm_vm_init(xmaxmem, args);
++#if defined(B2L)
++	b2l_early_mark(15, "arm_vm_init returned");
++	PE_init_printf(FALSE);
++#endif
+ 
+ 	if (debug_boot_arg) {
+ 		patch_low_glo();
+@@ -516,7 +543,18 @@ arm_init(
+ 	PE_consistent_debug_inherit();
+ 
+ 	/* Setup debugging output. */
++#if defined(B2L)
++	b2l_early_mark(16, "initializing framebuffer serial sink");
++#endif
+ 	const unsigned int serial_exists = serial_init();
++#if defined(B2L)
++	b2l_early_mark(17, "framebuffer serial initialized");
++	if (serial_exists) {
++		serial_console_enabled = true;
++		(void)switch_to_serial_console();
++		disableConsoleOutput = FALSE;
++	}
++#endif
+ 	kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF);
+ 	kprintf("kprintf initialized\n");
+ 
+@@ -546,10 +584,12 @@ arm_init(
+ 		(void)switch_to_serial_console(); /* Switch into serial mode from video console */
+ 		disableConsoleOutput = FALSE;     /* Allow printfs to happen */
+ 	}
++#if !defined(B2L)
+ 	PE_create_console();
+ 
+ 	/* setup console output */
+ 	PE_init_printf(FALSE);
++#endif
+ 
+ #if __arm64__
+ #if DEBUG
+diff --git a/osfmk/arm/pmap/pmap_misc.c b/osfmk/arm/pmap/pmap_misc.c
+index cb97411..ced31be 100644
+--- a/osfmk/arm/pmap/pmap_misc.c
++++ b/osfmk/arm/pmap/pmap_misc.c
+@@ -37,3 +37,11 @@
+  * own file.
+  */
+ 
++
++#if defined(B2L) && SCHED_HYGIENE_DEBUG && (DEVELOPMENT || DEBUG) && !XNU_MONITOR
++bool
++pmap_pending_preemption(void)
++{
++        return _pmap_pending_preemption_real();
++}
++#endif
+diff --git a/osfmk/arm/proc_reg.h b/osfmk/arm/proc_reg.h
+index 60248c3..8a62fe5 100644
+--- a/osfmk/arm/proc_reg.h
++++ b/osfmk/arm/proc_reg.h
+@@ -369,7 +369,7 @@
+ /* D-Cache. */
+ #define MMU_CLINE   6
+ 
+-#elif defined (VMAPPLE)
++#elif defined (VMAPPLE) || defined (B2L)
+ 
+ /* I-Cache. */
+ #define MMU_I_CLINE 6
+diff --git a/osfmk/arm64/Makefile b/osfmk/arm64/Makefile
+index a629f23..e702dda 100644
+--- a/osfmk/arm64/Makefile
++++ b/osfmk/arm64/Makefile
+@@ -46,6 +46,7 @@ EXPORT_MD_LIST = \
+ EXPORT_MD_DIR = arm64
+ 
+ INSTALL_MD_DIR = arm64
++EXPORT_MD_LIST += b2l_early.h
+ 
+ include $(MakeInc_rule)
+ include $(MakeInc_dir)
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index 94e26ed..87256d0 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -26,6 +26,8 @@
+  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
+  */
+ 
++#include <arm64/b2l_early.h>
++
+ #include <mach_debug.h>
+ #include <mach_kdp.h>
+ #include <debug.h>
+@@ -1784,6 +1786,43 @@ init_ptpages(tt_entry_t *tt, vm_map_address_t start, vm_map_address_t end, bool
+ #define ARM64_PHYSMAP_SLIDE_RANGE (1ULL << 30) // 1 GB
+ #define ARM64_PHYSMAP_SLIDE_MASK  (ARM64_PHYSMAP_SLIDE_RANGE - 1)
+ 
++#if defined(B2L)
++/* This virtual window is already excluded from the VM allocator by
++ * pmap_virtual_region(3): VM_MIN_KERNEL_ADDRESS .. LOW_GLOBAL_BASE_ADDRESS.
++ * It maps only the existing firmware GOP. No physical RAM guard is changed. */
++#define B2L_EARLY_FB_VA (LOW_GLOBAL_BASE_ADDRESS - (32ULL * 1024 * 1024))
++static vm_offset_t
++b2l_map_early_framebuffer(void)
++{
++	uint64_t physical, length;
++	if (!b2l_early_range(&physical, &length)) return 0;
++	uint64_t page_base = physical & ~ARM_TT_L2_OFFMASK;
++	uint64_t offset = physical - page_base;
++	uint64_t span = (offset + length + ARM_TT_L2_OFFMASK) & ~ARM_TT_L2_OFFMASK;
++	if (page_base < B2L_FB_RESERVED_BASE ||
++	    page_base + span > B2L_FB_RESERVED_BASE + B2L_FB_RESERVED_SIZE ||
++	    span > 32ULL * 1024 * 1024 || B2L_EARLY_FB_VA < VM_MIN_KERNEL_ADDRESS ||
++	    B2L_EARLY_FB_VA + span > LOW_GLOBAL_BASE_ADDRESS) {
++		panic("B2L console: framebuffer does not fit reserved virtual window");
++	}
++	init_ptpages(cpu_tte, B2L_EARLY_FB_VA, B2L_EARLY_FB_VA + span, TRUE,
++	    ARM_TTE_TABLE_AP(ARM_TTE_TABLE_AP_USER_NA));
++	for (uint64_t done = 0; done < span; done += ARM_TT_L2_SIZE) {
++		vm_map_address_t va = B2L_EARLY_FB_VA + done;
++		tt_entry_t l1 = cpu_tte[L1_TABLE_T1_INDEX(va, TCR_EL1_BOOT)];
++		tt_entry_t *l2 = (tt_entry_t *)phystokv(l1 & ARM_TTE_TABLE_MASK);
++		tt_entry_t *entry = &l2[(va & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT];
++		if (*entry != ARM_TTE_EMPTY) panic("B2L console: framebuffer VA is already mapped");
++		*entry = (page_base + done) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++		    ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) |
++		    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_DISABLE) |
++		    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
++	}
++	__asm__ volatile("dsb ishst" ::: "memory");
++	return B2L_EARLY_FB_VA + offset;
++}
++#endif
++
+ void
+ arm_vm_init(uint64_t memory_size, boot_args * args)
+ {
+@@ -2108,14 +2147,27 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 
+ 	arm_set_user_tbi();
+ 
++#if defined(B2L)
++	b2l_early_mark(8, "installing final framebuffer mapping");
++	vm_offset_t b2l_fb_alias = b2l_map_early_framebuffer();
++	b2l_early_mark(9, "switching kernel translation tables");
++#endif
+ 	arm_vm_physmap_init(args);
+ 	set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
++#if defined(B2L)
++	if (b2l_fb_alias != 0) b2l_early_relocate(b2l_fb_alias);
++#endif
+ 
++#if !defined(B2L)
+ 	ml_enable_monitor();
++#endif
+ 
+ 	set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
+ 
+ 	flush_mmu_tlb();
++#if defined(B2L)
++	b2l_early_mark(12, "bootstrap TTBR0 removed");
++#endif
+ 	kva_active = TRUE;
+ 	// global table pointers may need to be different due to physical aperture remapping
+ 	cpu_tte = (tt_entry_t*)(phystokv(cpu_ttep));
+@@ -2188,8 +2240,14 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	for (vm_offset_t cur = (vm_offset_t)pmap_stacks_start; cur < (vm_offset_t)pmap_stacks_end; cur += ARM_PGBYTES) {
+ 		arm_vm_map(cpu_tte, cur, ARM_PTE_EMPTY);
+ 	}
++#endif
++#if defined(B2L)
++	b2l_early_mark(13, "calling pmap_bootstrap");
+ #endif
+ 	pmap_bootstrap(dynamic_memory_begin);
++#if defined(B2L)
++	b2l_early_mark(14, "pmap_bootstrap complete");
++#endif
+ 
+ 	disable_preemption();
+ 
+diff --git a/osfmk/arm64/caches_asm.s b/osfmk/arm64/caches_asm.s
+index 22c6910..326d882 100644
+--- a/osfmk/arm64/caches_asm.s
++++ b/osfmk/arm64/caches_asm.s
+@@ -360,6 +360,17 @@ LEXT(FlushPoU_Dcache)
+ 	DCACHE_SET_WAY	cisw
+ #endif /* defined(APPLE_ARM64_ARCH_FAMILY) */
+ 
++#if defined(B2L)
++/* Generic ARMv8 cache maintenance has no Apple HID register sequence. */
++        .text
++        .align 2
++        .globl EXT(CleanPoC_DcacheRegion_Force_nopreempt)
++        .globl EXT(CleanPoC_DcacheRegion_Force_nopreempt_nohid)
++LEXT(CleanPoC_DcacheRegion_Force_nopreempt)
++LEXT(CleanPoC_DcacheRegion_Force_nopreempt_nohid)
++        b EXT(CleanPoC_DcacheRegion_internal)
++#endif
++
+ /*
+  *	void FlushPoC_DcacheRegion(vm_offset_t va, unsigned length)
+  *
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+index 669cdfc..8155aff 100644
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -2652,3 +2652,12 @@ ml_cluster_wfe_timeout(uint32_t wfe_cluster_id)
+ #endif
+ 	return wfet;
+ }
++
++#if defined(B2L)
++boolean_t
++ml_device_is_prod_fused(void)
++{
++        /* This research target has no Apple production-fuse policy source. */
++        return FALSE;
++}
++#endif
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index fa3a4b3..dda7209 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1824,6 +1824,13 @@ handle_simd_trap(arm_saved_state_t *state, uint32_t esr)
+ 	__builtin_unreachable();
+ }
+ 
++#if defined(B2L)
++extern void cpu_signal_handler(void);
++extern uint32_t b2l_irq_ack(void);
++extern void b2l_irq_eoi(uint32_t iar);
++extern void b2l_irq_record(unsigned intid);
++#endif
++
+ void
+ sleh_irq(arm_saved_state_t *state)
+ {
+@@ -1835,7 +1842,26 @@ sleh_irq(arm_saved_state_t *state)
+ 
+ 	sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+ 
+-#if USE_APPLEARMSMP
++#if defined(B2L)
++	uint32_t iar = b2l_irq_ack();
++	unsigned intid = iar & 0x3ffU;
++	/* GICv2 reserves 1020..1023 as special/spurious acknowledgements. */
++	if (intid < 1020) {
++		b2l_irq_record(intid);
++		if (intid == B2L_TIMER_INTID) {
++			cdp->cpu_decrementer = -1;
++			ml_interrupt_masked_debug_start(rtclock_intr, DBG_INTR_TYPE_TIMER);
++			rtclock_intr(TRUE);
++			ml_interrupt_masked_debug_end();
++		} else if (intid == 1) {
++			cpu_signal_handler();
++		} else {
++			b2l_irq_eoi(iar);
++			panic("B2L GIC: unexpected unregistered IRQ %u", intid);
++		}
++		b2l_irq_eoi(iar);
++	}
++#elif USE_APPLEARMSMP
+ 	PE_handle_ext_interrupt();
+ #else
+ 	/* Run the registered interrupt handler. */
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index f95745f..9f0eb3c 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -33,7 +33,13 @@
+ #include <mach_assert.h>
+ #include <machine/asm.h>
+ #include "assym.s"
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Exynos does not implement Apple's SoC-specific implementation registers. */
++.macro APPLY_TUNABLES midr, tmp1, tmp2
++.endmacro
++#else
+ #include <arm64/tunables/tunables.s>
++#endif
+ #include <arm64/exception_asm.h>
+ 
+ #if __ARM_KERNEL_PROTECT__
+@@ -42,6 +48,73 @@
+ 
+ 
+ 
++
++#if defined(B2L)
++/* Stackless bitmap text. PC-relative iso_font addressing works while executing
++ * at physical addresses and again through the identity bootstrap map. */
++.macro B2L_BOOT_TEXT text, ypos
++	ldr x9, [x20, #40]
++	and x9, x9, #~3
++	cbz x9, .Lb2l_text_end\@
++	ldr x10, [x20, #56]
++	ldr x11, [x20, #64]
++	cmp x11, #800
++	b.lo .Lb2l_text_end\@
++	ldr x4, [x20, #72]
++	cmp x4, #(\ypos + 48)
++	b.lo .Lb2l_text_end\@
++	mov x15, #2
++	cmp x11, #1200
++	b.lo .Lb2l_scale_ready\@
++	mov x15, #3
++.Lb2l_scale_ready\@:
++	mov x4, #\ypos
++	madd x14, x4, x10, x9
++	add x14, x14, #96
++	adrp x12, EXT(iso_font)@page
++	add x12, x12, EXT(iso_font)@pageoff
++	adr x13, .Lb2l_text_string\@
++.Lb2l_text_char\@:
++	ldrb w11, [x13], #1
++	cbz w11, .Lb2l_text_finished\@
++	add x11, x12, x11, lsl #4
++	mov x16, #16
++	mov x4, x14
++.Lb2l_text_glyph_row\@:
++	ldrb w17, [x11], #1
++	mov x5, x15
++.Lb2l_text_scale_y\@:
++	mov x6, x4
++	mov x18, #0
++.Lb2l_text_glyph_col\@:
++	lsr x8, x17, x18
++	and w8, w8, #1
++	neg w8, w8
++	mov x7, x15
++.Lb2l_text_scale_x\@:
++	str w8, [x6], #4
++	subs x7, x7, #1
++	b.ne .Lb2l_text_scale_x\@
++	add x18, x18, #1
++	cmp x18, #8
++	b.lo .Lb2l_text_glyph_col\@
++	add x4, x4, x10
++	subs x5, x5, #1
++	b.ne .Lb2l_text_scale_y\@
++	subs x16, x16, #1
++	b.ne .Lb2l_text_glyph_row\@
++	add x14, x14, x15, lsl #5
++	b .Lb2l_text_char\@
++.Lb2l_text_finished\@:
++	dsb sy
++	b .Lb2l_text_end\@
++.Lb2l_text_string\@:
++	.asciz "\text"
++	.p2align 2
++.Lb2l_text_end\@:
++.endmacro
++#endif
++
+ .macro MSR_VBAR_EL1_X0
+ #if defined(KERNEL_INTEGRITY_KTRR)
+ 	mov	x1, lr
+@@ -456,13 +529,45 @@ start_cpu:
+ 	.globl EXT(start_first_cpu)
+ LEXT(start_first_cpu)
+ 
+-	// Unlock the core for debugging
+-	msr		OSLAR_EL1, xzr
+-	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
+-
+ 	mov		x20, x0
+ 	mov		x21, #0
+ 
++#if defined(B2L)
++	// First proof is before ANY system-register access.  Exynos security
++	// firmware may trap optional debug-register writes (including OSLAR).
++	// A large green rectangle appears near the bottom, outside the EFI log.
++	// x9..x14 are scratch; boot_args.Video starts at byte 40 in ABI v2.
++	ldr		x9, [x20, #40]
++	and		x9, x9, #~3
++	cbz		x9, Lb2l_entry_marker_done
++	ldr		x10, [x20, #56]
++	ldr		x11, [x20, #72]           // framebuffer height
++	sub		x11, x11, #96
++	mul		x11, x11, x10
++	add		x9, x9, x11
++	add		x9, x9, #32               // x=8, 32bpp
++	mov		w11, #0xff00              // green 128x64 entry marker
++	mov		x12, #64
++Lb2l_entry_marker_row:
++	mov		x13, #128
++Lb2l_entry_marker_pixel:
++	str		w11, [x9], #4
++	subs	x13, x13, #1
++	b.ne	Lb2l_entry_marker_pixel
++	sub		x9, x9, #512
++	add		x9, x9, x10
++	subs	x12, x12, #1
++	b.ne	Lb2l_entry_marker_row
++	dsb		sy
++Lb2l_entry_marker_done:
++	B2L_BOOT_TEXT "XNU ENTRY", 336
++#else
++	// Optional debug unlock on Apple platforms only.  There is no debug
++	// hardware dependency in the B2L first-boot path.
++	msr		OSLAR_EL1, xzr
++#endif
++	msr		DAIFSet, #(DAIFSC_ALL)     // Disable all interrupts
++
+ 	// Set low reset vector before attempting any loads
+ 	adrp	x0, EXT(LowExceptionVectorBase)@page
+ 	add		x0, x0, EXT(LowExceptionVectorBase)@pageoff
+@@ -525,7 +630,11 @@ LEXT(start_first_cpu)
+ 	mov		x0, #(ARM_TTE_EMPTY)				// Load invalid entry template
+ 	mov		x1, x25								// Start at V=P pagetable root
+ 	mov		x2, #(TTE_PGENTRIES)				// Load number of entries per page
++#if defined(B2L)
++	mov x2, #(TTE_PGENTRIES * B2L_BOOTSTRAP_TABLE_PAGES)
++#else
+ 	lsl		x2, x2, #2							// Shift by 2 for num entries on 4 pages
++#endif
+ 
+ Linvalidate_bootstrap:							// do {
+ 	str		x0, [x1], #(1 << TTE_SHIFT)			//   Invalidate and advance
+@@ -609,6 +718,67 @@ Lkernelcache_base_found:
+ 	lsr		x5,  x24, #(ARM_TT_L2_SHIFT)
+ 	create_bootstrap_mapping x14, x15, x5, x3, x2, x9, x10, x11, x12, x13
+ 
++
++#if defined(B2L)
++	/* Map only the firmware-provided GOP scanout as device memory in TTBR0.
++	 * This does not expose its reserved pages as normal/allocatable RAM.
++	 * At most two additional L2 tables are needed for a <=32 MiB span. */
++	ldr x0, [x20, #40]
++	and x0, x0, #~3
++	cbz x0, Lb2l_fb_map_done
++	ldr x4, [x20, #56]
++	ldr x5, [x20, #72]
++	mul x4, x4, x5
++	cbz x4, Lb2l_fb_map_done
++	adds x4, x4, x0
++	b.cs Lb2l_fb_map_done
++	MOV64 x6, (ARM_TT_L2_SIZE - 1)
++	adds x4, x4, x6
++	b.cs Lb2l_fb_map_done
++	and x4, x4, #ARM_TTE_BLOCK_L2_MASK
++	and x0, x0, #ARM_TTE_BLOCK_L2_MASK
++	// Rounded blocks must remain inside the original DisplayReserved guard.
++	MOV64 x6, B2L_FB_RESERVED_BASE
++	cmp x0, x6
++	b.lo Lb2l_fb_map_done
++	MOV64 x6, (B2L_FB_RESERVED_BASE + B2L_FB_RESERVED_SIZE)
++	cmp x4, x6
++	b.hi Lb2l_fb_map_done
++	sub x5, x4, x0
++	MOV64 x6, (32 * 1024 * 1024)
++	cmp x5, x6
++	b.hi Lb2l_fb_map_done
++	lsr x6, x4, #39
++	cbnz x6, Lb2l_fb_map_done
++Lb2l_fb_map_block:
++	lsr x6, x0, #ARM_TT_L1_SHIFT
++	and x6, x6, #(TTE_PGENTRIES - 1)
++	add x6, x1, x6, lsl #TTE_SHIFT
++	ldr x7, [x6]
++	cbnz x7, Lb2l_fb_l2_exists
++	add x2, x2, PGBYTES
++	MOV64 x12, (PGBYTES * B2L_BOOTSTRAP_TABLE_PAGES)
++	add x12, x12, x25
++	cmp x2, x12
++	b.hs Lb2l_fb_map_done
++	orr x7, x2, #(ARM_TTE_TYPE_TABLE | ARM_TTE_VALID)
++	str x7, [x6]
++Lb2l_fb_l2_exists:
++	and x8, x7, #ARM_TTE_TABLE_MASK
++	and x9, x0, #ARM_TT_L2_INDEX_MASK
++	lsr x9, x9, #ARM_TT_L2_SHIFT
++	add x9, x8, x9, lsl #TTE_SHIFT
++	MOV64 x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_DISABLE) | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
++	orr x11, x11, x0
++	str x11, [x9]
++	MOV64 x11, ARM_TT_L2_SIZE
++	add x0, x0, x11
++	cmp x0, x4
++	b.lo Lb2l_fb_map_block
++Lb2l_fb_map_done:
++	B2L_BOOT_TEXT "MMU PREP", 384
++#endif
++
+ 	/* Ensure TTEs are visible */
+ 	dsb		ish
+ 
+@@ -741,6 +911,10 @@ common_start:
+ #endif /* HAS_APPLE_PAC */
+ 
+ 	// Enable caches, MMU, ROP and JOP
++#if defined(B2L)
++	B2L_BOOT_TEXT "MMU ON", 432
++#endif
++
+ 	MOV64   x0, SCTLR_EL1_DEFAULT
+ 	MSR_SCTLR_EL1_X0
+ 	isb		sy
+@@ -805,6 +979,9 @@ common_start:
+ 	mov	lr, x21
+ #endif
+ 
++#if defined(B2L)
++	B2L_BOOT_TEXT "ENTER C", 480
++#endif
+ 	// Return to arm_init()
+ 	ret
+ 
+diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
+index 2d925d1..9ddc616 100644
+--- a/osfmk/conf/files.arm64
++++ b/osfmk/conf/files.arm64
+@@ -1,3 +1,4 @@
++OPTIONS/b2l optional b2l
+ OPTIONS/fb			optional fb
+ 
+ OPTIONS/debug			optional debug
+@@ -24,7 +25,7 @@ osfmk/arm64/WKdmCompress_4k.s	standard
+ osfmk/arm64/WKdmData.s		standard
+ osfmk/arm64/lz4_decode_arm64.s  standard
+ osfmk/arm64/lz4_encode_arm64.s  standard
+-osfmk/arm64/amcc_rorgn.c optional nos_arm_asm
++osfmk/arm64/amcc_rorgn.c optional nos_arm_asm not b2l
+ osfmk/arm64/bcopy.s standard
+ osfmk/arm64/bzero.s standard
+ osfmk/arm/caches.c		standard
+@@ -101,3 +102,5 @@ osfmk/arm64/machine_remote_time.c optional config_mach_bridge_recv_time
+ osfmk/arm64/corecrypto/sha256_compress_arm64.s	standard
+ 
+ osfmk/arm/counter.c	standard
++
++osfmk/arm64/b2l_early.c optional b2l
+diff --git a/osfmk/console/video_console.c b/osfmk/console/video_console.c
+index c870c02..44aebc1 100644
+--- a/osfmk/console/video_console.c
++++ b/osfmk/console/video_console.c
+@@ -103,6 +103,9 @@
+ 
+ #include <pexpert/pexpert.h>
+ #include <sys/kdebug.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_early.h>
++#endif
+ 
+ #include "iso_font.c"
+ #if defined(XNU_TARGET_OS_OSX)
+@@ -151,7 +154,13 @@ static uint32_t gc_buffer_size;
+ 
+ 
+ LCK_GRP_DECLARE(vconsole_lck_grp, "vconsole");
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Early serial output does not attach the graphical console. Control paths
++ * still need real locks before IOKit can release or pause the display. */
++static LCK_TICKET_DECLARE(vcputc_lock, &vconsole_lck_grp);
++#else
+ static lck_ticket_t vcputc_lock;
++#endif
+ 
+ 
+ #define VCPUTC_LOCK_INIT()                              \
+@@ -473,8 +482,10 @@ static void
+ gc_initialize(struct vc_info * info)
+ {
+ 	if (gc_initialized == FALSE) {
+-		/* Init our lock */
++		/* B2L initializes this lock once at the standard LOCKS startup. */
++#if !defined(ARM64_BOARD_CONFIG_B2L)
+ 		VCPUTC_LOCK_INIT();
++#endif
+ 
+ 		gc_initialized = TRUE;
+ 	}
+@@ -1291,6 +1302,19 @@ static int vc_rendered_char_size = 0;
+ #define REN_MAX_DEPTH   32
+ static unsigned char vc_rendered_char[ISO_CHAR_HEIGHT * ((REN_MAX_DEPTH / 8) * ISO_CHAR_WIDTH)];
+ 
++/* XNU's built-in font is 8x16 regardless of the boot video UI scale.
++ * Expand actual glyph pixels and ALL cell geometry for B2L high-DPI panels.
++ * Non-B2L platforms retain their original dimensions and rendering paths. */
++#if defined(ARM64_BOARD_CONFIG_B2L)
++static unsigned int vc_b2l_text_scale = 1;
++#define VC_CHAR_WIDTH (ISO_CHAR_WIDTH * vc_b2l_text_scale)
++#define VC_CHAR_HEIGHT (ISO_CHAR_HEIGHT * vc_b2l_text_scale)
++#else
++#define VC_CHAR_WIDTH ISO_CHAR_WIDTH
++#define VC_CHAR_HEIGHT ISO_CHAR_HEIGHT
++#endif
++
++
+ #if defined(XNU_TARGET_OS_OSX)
+ #define CONFIG_VC_PROGRESS_METER_SUPPORT        1
+ #endif /* XNU_TARGET_OS_OSX */
+@@ -1334,7 +1358,7 @@ vc_clear_screen(unsigned int xx, unsigned int yy, unsigned int scrreg_top,
+ 		return;
+ 	}
+ 
+-	linelongs = vinfo.v_rowbytes * (ISO_CHAR_HEIGHT >> 2);
++	linelongs = vinfo.v_rowbytes * (VC_CHAR_HEIGHT >> 2);
+ 	rowline = vinfo.v_rowscanbytes >> 2;
+ 	rowlongs = vinfo.v_rowbytes >> 2;
+ 
+@@ -1609,6 +1633,39 @@ vc_paint_char_32(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
+ 	}
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++static void
++vc_b2l_paint_char_scaled(unsigned int xx, unsigned int yy, unsigned char ch, int attrs)
++{
++	/* Render from the original bitmap so early boot works before the
++	 * optional rendered-font allocation. Replicate every pixel in X/Y. */
++	const unsigned char *glyph = iso_font + ch * ISO_CHAR_HEIGHT;
++	for (unsigned int y = 0; y < ISO_CHAR_HEIGHT; ++y) {
++		unsigned int bits = glyph[y];
++		if (attrs & ATTR_BOLD) {
++			bits |= bits << 1;
++		}
++		if ((attrs & ATTR_UNDER) && y == ISO_CHAR_HEIGHT - 1) {
++			bits = 0xff;
++		}
++		if (attrs & ATTR_REVERSE) {
++			bits ^= 0xff;
++		}
++		for (unsigned int dy = 0; dy < vc_b2l_text_scale; ++dy) {
++			uint32_t *row = (uint32_t *)(vinfo.v_baseaddr +
++			    (yy * VC_CHAR_HEIGHT + y * vc_b2l_text_scale + dy) * vinfo.v_rowbytes +
++			    xx * VC_CHAR_WIDTH * sizeof(uint32_t));
++			for (unsigned int x = 0; x < ISO_CHAR_WIDTH; ++x) {
++				uint32_t color = (bits & (1U << x)) ? vc_color_fore : vc_color_back;
++				for (unsigned int dx = 0; dx < vc_b2l_text_scale; ++dx) {
++					*row++ = color;
++				}
++			}
++		}
++	}
++}
++#endif
++
+ static void
+ vc_paint_char(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
+     unsigned char ch_previous, int attrs_previous)
+@@ -1616,6 +1673,12 @@ vc_paint_char(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
+ 	if (!vinfo.v_depth) {
+ 		return;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (vinfo.v_depth == 32 && vc_b2l_text_scale > 1) {
++		vc_b2l_paint_char_scaled(xx, yy, ch, attrs);
++		return;
++	}
++#endif
+ 
+ 	switch (vinfo.v_depth) {
+ 	case 8:
+@@ -1699,16 +1762,16 @@ static void
+ vc_reverse_cursor(unsigned int xx, unsigned int yy)
+ {
+ 	uint32_t *where;
+-	int line, col;
++	unsigned int line, col;
+ 
+ 	if (!vinfo.v_depth) {
+ 		return;
+ 	}
+ 
+ 	where = (uint32_t*)(vinfo.v_baseaddr +
+-	    (yy * ISO_CHAR_HEIGHT * vinfo.v_rowbytes) +
+-	    (xx /** ISO_CHAR_WIDTH*/ * vinfo.v_depth));
+-	for (line = 0; line < ISO_CHAR_HEIGHT; line++) {
++	    (yy * VC_CHAR_HEIGHT * vinfo.v_rowbytes) +
++	    (xx * VC_CHAR_WIDTH * ((vinfo.v_depth + 7) / 8)));
++	for (line = 0; line < VC_CHAR_HEIGHT; line++) {
+ 		switch (vinfo.v_depth) {
+ 		case 8:
+ 			where[0] = ~where[0];
+@@ -1720,7 +1783,7 @@ vc_reverse_cursor(unsigned int xx, unsigned int yy)
+ 			}
+ 			break;
+ 		case 32:
+-			for (col = 0; col < 8; col++) {
++			for (col = 0; col < VC_CHAR_WIDTH; col++) {
+ 				where[col] = ~where[col];
+ 			}
+ 			break;
+@@ -1738,7 +1801,29 @@ vc_scroll_down(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+ 		return;
+ 	}
+ 
+-	linelongs = vinfo.v_rowbytes * (ISO_CHAR_HEIGHT >> 2);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* The generic video_scroll helpers multiply a byte pointer difference
++	 * by four again. Use explicit physical-row byte counts on B2L; copying
++	 * bottom-to-top for downward scrolling preserves overlapping rows. */
++	if (vinfo.v_depth == 32) {
++		if (num <= 0 || scrreg_bottom <= scrreg_top ||
++		    scrreg_bottom > vinfo.v_rows || (unsigned int)num >= scrreg_bottom - scrreg_top) {
++			return;
++		}
++		unsigned int rows = (scrreg_bottom - scrreg_top - num) * VC_CHAR_HEIGHT;
++		unsigned int first = scrreg_top * VC_CHAR_HEIGHT;
++		unsigned int delta = num * VC_CHAR_HEIGHT;
++		for (unsigned int row = 0; row < rows; ++row) {
++			unsigned int y = first + rows - 1 - row;
++			void *src = (void *)(vinfo.v_baseaddr + y * vinfo.v_rowbytes);
++			void *dst = (void *)(vinfo.v_baseaddr + (y + delta) * vinfo.v_rowbytes);
++			memmove(dst, src, vinfo.v_rowscanbytes);
++		}
++		return;
++	}
++#endif
++
++	linelongs = vinfo.v_rowbytes * (VC_CHAR_HEIGHT >> 2);
+ 	rowline = vinfo.v_rowbytes >> 2;
+ 	rowscanline = vinfo.v_rowscanbytes >> 2;
+ 
+@@ -1749,7 +1834,7 @@ vc_scroll_down(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+ 	i = (scrreg_bottom - scrreg_top) - num;
+ 
+ 	while (i-- > 0) {
+-		for (line = 0; line < ISO_CHAR_HEIGHT; line++) {
++		for (line = 0; line < VC_CHAR_HEIGHT; line++) {
+ 			/*
+ 			 * Only copy what is displayed
+ 			 */
+@@ -1772,7 +1857,29 @@ vc_scroll_up(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+ 		return;
+ 	}
+ 
+-	linelongs = vinfo.v_rowbytes * (ISO_CHAR_HEIGHT >> 2);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* The generic video_scroll helpers multiply a byte pointer difference
++	 * by four again. Use explicit physical-row byte counts on B2L; copying
++	 * bottom-to-top for downward scrolling preserves overlapping rows. */
++	if (vinfo.v_depth == 32) {
++		if (num <= 0 || scrreg_bottom <= scrreg_top ||
++		    scrreg_bottom > vinfo.v_rows || (unsigned int)num >= scrreg_bottom - scrreg_top) {
++			return;
++		}
++		unsigned int rows = (scrreg_bottom - scrreg_top - num) * VC_CHAR_HEIGHT;
++		unsigned int first = scrreg_top * VC_CHAR_HEIGHT;
++		unsigned int delta = num * VC_CHAR_HEIGHT;
++		for (unsigned int row = 0; row < rows; ++row) {
++			unsigned int y = first + row;
++			void *src = (void *)(vinfo.v_baseaddr + (y + delta) * vinfo.v_rowbytes);
++			void *dst = (void *)(vinfo.v_baseaddr + y * vinfo.v_rowbytes);
++			memmove(dst, src, vinfo.v_rowscanbytes);
++		}
++		return;
++	}
++#endif
++
++	linelongs = vinfo.v_rowbytes * (VC_CHAR_HEIGHT >> 2);
+ 	rowline = vinfo.v_rowbytes >> 2;
+ 	rowscanline = vinfo.v_rowscanbytes >> 2;
+ 
+@@ -1782,7 +1889,7 @@ vc_scroll_up(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+ 	i = (scrreg_bottom - scrreg_top) - num;
+ 
+ 	while (i-- > 0) {
+-		for (line = 0; line < ISO_CHAR_HEIGHT; line++) {
++		for (line = 0; line < VC_CHAR_HEIGHT; line++) {
+ 			/*
+ 			 * Only copy what is displayed
+ 			 */
+@@ -1834,7 +1941,11 @@ static int8_t                   vc_uiscale = 1;
+ vc_progress_user_options        vc_progress_options;
+ vc_progress_user_options        vc_user_options;
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++static SIMPLE_LOCK_DECLARE(vc_progress_lock, 0);
++#else
+ decl_simple_lock_data(, vc_progress_lock);
++#endif
+ 
+ #if defined(XNU_TARGET_OS_OSX)
+ static int                      vc_progress_withmeter = 3;
+@@ -2805,8 +2916,14 @@ vc_initialize(__unused struct vc_info * vinfo_p)
+ 	}
+ #endif
+ 
+-	vinfo.v_rows = vinfo.v_height / ISO_CHAR_HEIGHT;
+-	vinfo.v_columns = vinfo.v_width / ISO_CHAR_WIDTH;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* 1440-pixel beyond2lte GOP: 24x48 cells (60 columns).  A 1080/800
++	 * wide firmware mode uses 16x32 cells; tiny fallback modes stay 8x16. */
++	vc_b2l_text_scale = vinfo.v_depth != 32 ? 1 :
++	    (vinfo.v_width >= 1200 ? 3 : (vinfo.v_width >= 800 ? 2 : 1));
++#endif
++	vinfo.v_rows = vinfo.v_height / VC_CHAR_HEIGHT;
++	vinfo.v_columns = vinfo.v_width / VC_CHAR_WIDTH;
+ 	vinfo.v_rowscanbytes = ((vinfo.v_depth + 7) / 8) * vinfo.v_width;
+ 	vc_uiscale = vinfo.v_scale;
+ 	if (vc_uiscale > kMaxProgressData) {
+@@ -3080,6 +3197,25 @@ vcattach(void)
+ {
+ 	vm_initialized = TRUE;
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* Attach the real control/backend state without acquiring, clearing or
++	 * replaying the screen. The serial sink retains its early text history.
++	 * Reuse the bounded final mapping rather than map the GOP a second time. */
++	PE_Video early_video = PE_state.video;
++	early_video.v_baseAddr = b2l_early_virtual();
++	if (early_video.v_baseAddr == 0) {
++		panic("B2L console attach: early framebuffer unavailable");
++	}
++	early_video.v_offset = 0;
++	initialize_screen(&early_video, kPETextMode);
++	/* The early serial renderer already owns this scanout. Preserve it when
++	 * kernel_bootstrap_thread performs the initial acquire. A later explicit
++	 * release/acquire still follows the ordinary display-control lifecycle. */
++	gc_acquired = TRUE;
++	kprintf("B2L console: display controls attached; early history preserved\n");
++	return;
++#endif
++
+ #if defined(CONFIG_VC_PROGRESS_METER_SUPPORT)
+ 	const boot_args * bootargs  = (typeof(bootargs))PE_state.bootArgs;
+ 
+@@ -3100,7 +3236,10 @@ vcattach(void)
+ 	vc_progress_meter_end   = kProgressMeterEnd;
+ #endif /* defined(__x86_64__ */
+ #endif /* defined(CONFIG_VC_PROGRESS_METER_SUPPORT) */
++	/* B2L progress lock also belongs to standard LOCKS startup. */
++#if !defined(ARM64_BOARD_CONFIG_B2L)
+ 	simple_lock_init(&vc_progress_lock, 0);
++#endif
+ 
+ 	if (gc_graphics_boot == FALSE) {
+ 		long index;
+diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+index 8549847..395f2ce 100644
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -54,6 +54,10 @@
+  * the rights to redistribute these changes.
+  */
+ 
++#if defined(__arm64__)
++#include <arm64/b2l_early.h>
++#endif
++
+ #include <mach_assert.h>
+ #include <mach_kdp.h>
+ #include <kdp/kdp.h>
+@@ -1257,6 +1261,9 @@ debugger_collect_diagnostics(unsigned int exception, unsigned int code, unsigned
+ #endif
+ 			{
+ 				/*
++#if defined(B2L)
++	b2l_early_panic(panic_format_str, panic_args);
++#endif
+ 				 * Doing an on-device coredump leaves the disk driver in a state
+ 				 * that can not be resumed.
+ 				 */
+diff --git a/osfmk/kern/processor.c b/osfmk/kern/processor.c
+index dee9d73..370b898 100644
+--- a/osfmk/kern/processor.c
++++ b/osfmk/kern/processor.c
+@@ -148,7 +148,9 @@ processor_set_t         pset_array[MAX_PSETS] = { 0 };
+ 
+ static timer_call_func_t running_timer_funcs[] = {
+ 	[RUNNING_TIMER_QUANTUM] = thread_quantum_expire,
++#if KPERF
+ 	[RUNNING_TIMER_KPERF] = kperf_timer_expire,
++#endif
+ };
+ static_assert(sizeof(running_timer_funcs) / sizeof(running_timer_funcs[0])
+     == RUNNING_TIMER_MAX, "missing running timer function");
+diff --git a/osfmk/prng/prng_random.c b/osfmk/prng/prng_random.c
+index c52f0ab..1d25415 100644
+--- a/osfmk/prng/prng_random.c
++++ b/osfmk/prng/prng_random.c
+@@ -219,6 +219,101 @@ early_random(void)
+ 	return result;
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Register the real built-in HMAC-SHA256 DRBG before allocator initialization.
++ * This registers only the kernel PRNG, not unrelated corecrypto services.
++ * Boot entropy validation and entropy health tests remain unchanged. */
++#include <kern/startup.h>
++static LCK_GRP_DECLARE(b2l_prng_group, "b2l-prng");
++static LCK_MTX_DECLARE(b2l_prng_lock, &b2l_prng_group);
++static struct cckprng_ctx b2l_prng_ctx;
++static const struct ccdrbg_nisthmac_custom b2l_prng_custom = {
++	.di = &ccsha256_ltc_di, .strictFIPS = 0,
++};
++static cckprng_getentropy b2l_getentropy;
++static void *b2l_getentropy_arg;
++static unsigned b2l_max_ngens;
++static bool b2l_generators[MAX_CPUS];
++
++static struct ccdrbg_state *b2l_prng_state(struct cckprng_ctx *ctx)
++{
++	return (struct ccdrbg_state *)ctx->drbg_state;
++}
++static void b2l_prng_check(int result)
++{
++	if (result != CCDRBG_STATUS_OK) panic("B2L HMAC DRBG error %d", result);
++}
++static void
++b2l_prng_init_with_getentropy(struct cckprng_ctx *ctx, unsigned max_ngens,
++    size_t seed_nbytes, const void *seed, size_t nonce_nbytes, const void *nonce,
++    cckprng_getentropy getentropy, void *getentropy_arg)
++{
++	assert(max_ngens > 0 && max_ngens <= MAX_CPUS);
++	ccdrbg_factory_nisthmac(&ctx->drbg_info, &b2l_prng_custom);
++	assert(ctx->drbg_info.size <= sizeof(ctx->drbg_state));
++	const char personalization[] = "xnu b2l kernel random";
++	b2l_prng_check(ccdrbg_init(&ctx->drbg_info, b2l_prng_state(ctx), seed_nbytes,
++	    seed, nonce_nbytes, nonce, sizeof(personalization) - 1, personalization));
++	b2l_getentropy = getentropy; b2l_getentropy_arg = getentropy_arg;
++	b2l_max_ngens = max_ngens;
++}
++static void
++b2l_prng_init(struct cckprng_ctx *ctx, size_t seed_nbytes, const void *seed,
++    size_t nonce_nbytes, const void *nonce, cckprng_getentropy getentropy, void *arg)
++{
++	b2l_prng_init_with_getentropy(ctx, MAX_CPUS, seed_nbytes, seed,
++	    nonce_nbytes, nonce, getentropy, arg);
++}
++static void b2l_prng_initgen(struct cckprng_ctx *ctx __unused, unsigned index)
++{
++	lck_mtx_lock(&b2l_prng_lock);
++	assert(index < b2l_max_ngens && !b2l_generators[index]);
++	b2l_generators[index] = true;
++	lck_mtx_unlock(&b2l_prng_lock);
++}
++static void b2l_prng_reseed(struct cckprng_ctx *ctx, size_t size, const void *seed)
++{
++	lck_mtx_lock(&b2l_prng_lock);
++	b2l_prng_check(ccdrbg_reseed(&ctx->drbg_info, b2l_prng_state(ctx), size, seed, 0, NULL));
++	lck_mtx_unlock(&b2l_prng_lock);
++}
++static void b2l_prng_refresh(struct cckprng_ctx *ctx)
++{
++	if (!lck_mtx_try_lock(&b2l_prng_lock)) return;
++	uint8_t entropy[CCKPRNG_ENTROPY_SIZE];
++	size_t size = sizeof(entropy);
++	int32_t samples = b2l_getentropy(&size, entropy, b2l_getentropy_arg);
++	if (samples < 0) panic("B2L PRNG entropy health test failed");
++	/* XNU 12377's SHA512 conditioner requires 512+64 accepted samples. */
++	if (samples >= 512 + 64) {
++		assert(size >= SEED_SIZE && size <= sizeof(entropy));
++		b2l_prng_check(ccdrbg_reseed(&ctx->drbg_info, b2l_prng_state(ctx), size, entropy, 0, NULL));
++	}
++	cc_clear(sizeof(entropy), entropy);
++	lck_mtx_unlock(&b2l_prng_lock);
++}
++static void b2l_prng_generate(struct cckprng_ctx *ctx, unsigned index, size_t size, void *out)
++{
++	assert(size <= CCKPRNG_GENERATE_MAX_NBYTES);
++	lck_mtx_lock(&b2l_prng_lock);
++	assert(index < b2l_max_ngens && b2l_generators[index]);
++	b2l_prng_check(ccdrbg_generate(&ctx->drbg_info, b2l_prng_state(ctx), size, out, 0, NULL));
++	lck_mtx_unlock(&b2l_prng_lock);
++}
++__startup_func static void b2l_prng_startup(void)
++{
++	(void)early_random(); /* Populate boot-derived seeds before registration. */
++	const struct cckprng_funcs funcs = {
++		.init = b2l_prng_init, .initgen = b2l_prng_initgen,
++		.reseed = b2l_prng_reseed, .refresh = b2l_prng_refresh,
++		.generate = b2l_prng_generate, .init_with_getentropy = b2l_prng_init_with_getentropy,
++	};
++	register_and_init_prng(&b2l_prng_ctx, &funcs);
++	kprintf("B2L PRNG: boot-seeded HMAC-SHA256 registered\n");
++}
++STARTUP(EARLY_BOOT, STARTUP_RANK_FIRST, b2l_prng_startup);
++#endif
++
+ static void
+ read_random_generate(uint8_t *buffer, size_t numbytes);
+ 
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index 760fbc7..fcd8374 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -16,7 +16,121 @@
+ #endif
+ 
+ 
+-#if HAS_GIC_V3
++#if defined(B2L)
++/*
++ * Exynos 9820 exposes the GICv2 non-secure CPU interface.  The architected
++ * virtual timer is PPI 27 and is delivered as IRQ (Group 1), not Apple FIQ.
++ * Firmware retains the secure-world distributor configuration.
++ */
++static vm_offset_t b2l_gicd;
++static vm_offset_t b2l_gicc;
++static volatile uint64_t b2l_timer_irqs;
++static volatile uint64_t b2l_signal_irqs;
++
++static uint32_t
++b2l_gic_read(vm_offset_t base, unsigned offset)
++{
++	return *(volatile uint32_t *)(base + offset);
++}
++
++static void
++b2l_gic_write(vm_offset_t base, unsigned offset, uint32_t value)
++{
++	*(volatile uint32_t *)(base + offset) = value;
++}
++
++uint32_t
++b2l_irq_ack(void)
++{
++	return b2l_gic_read(b2l_gicc, 0x00c); /* GICC_IAR, preserve SGI source bits */
++}
++
++void
++b2l_irq_eoi(uint32_t iar)
++{
++	b2l_gic_write(b2l_gicc, 0x010, iar);
++	__builtin_arm_dsb(DSB_SY);
++}
++
++void
++b2l_send_self_ipi(void)
++{
++	__builtin_arm_dsb(DSB_ISHST);
++	b2l_gic_write(b2l_gicd, 0xf00, (2U << 24) | 1U);
++	__builtin_arm_dsb(DSB_SY);
++}
++
++void
++b2l_irq_record(unsigned intid)
++{
++	if (intid == B2L_TIMER_INTID) {
++		b2l_timer_irqs++;
++	} else if (intid == 1) {
++		b2l_signal_irqs++;
++	}
++}
++
++uint64_t
++b2l_irq_count(boolean_t timer)
++{
++	return timer ? b2l_timer_irqs : b2l_signal_irqs;
++}
++
++void
++pe_init_fiq(void)
++{
++	if (b2l_gicd == 0) {
++		DTEntry entry;
++		const void *prop;
++		unsigned size;
++		if (SecureDTLookupEntry(NULL, "/arm-io/gic", &entry) != kSuccess ||
++		    SecureDTGetProperty(entry, "reg", &prop, &size) != kSuccess ||
++		    size != 4 * sizeof(uint64_t)) {
++			panic("B2L GIC: missing GICv2 MMIO ranges");
++		}
++		const uint64_t *reg = prop;
++		uint64_t soc = pe_arm_get_soc_base_phys();
++		/* Refuse an unrelated firmware tree before touching controller MMIO. */
++		if (soc + reg[0] != B2L_GICD_PA || soc + reg[2] != B2L_GICC_PA ||
++		    reg[1] != 0x1000 || reg[3] != 0x1000) {
++			panic("B2L GIC: unexpected Exynos 9820 register ranges");
++		}
++		b2l_gicd = ml_io_map(soc + reg[0], reg[1]);
++		b2l_gicc = ml_io_map(soc + reg[2], reg[3]);
++		if (!b2l_gicd || !b2l_gicc) {
++			panic("B2L GIC: cannot map controller");
++		}
++		/* No peripheral drivers exist in the first-boot target.  Mask stale
++		 * non-secure firmware SPIs; secure interrupt bits are RAZ/WI here. */
++		unsigned banks = (b2l_gic_read(b2l_gicd, 0x004) & 31U) + 1;
++		for (unsigned bank = 1; bank < banks; ++bank) {
++			b2l_gic_write(b2l_gicd, 0x180 + bank * 4, UINT32_MAX);
++			b2l_gic_write(b2l_gicd, 0x280 + bank * 4, UINT32_MAX);
++		}
++	}
++	const uint32_t sources = (1U << B2L_TIMER_INTID) | (1U << 1);
++	b2l_gic_write(b2l_gicd, 0x180, UINT32_MAX); /* banked PPI/SGI masks */
++	b2l_gic_write(b2l_gicd, 0x080,
++	    b2l_gic_read(b2l_gicd, 0x080) | sources); /* Group 1 */
++	b2l_gic_write(b2l_gicd, 0x280, sources);
++	/* Banked priorities: SGI1 and virtual timer PPI27. */
++	*(volatile uint8_t *)(b2l_gicd + 0x401) = 0x80;
++	*(volatile uint8_t *)(b2l_gicd + 0x400 + B2L_TIMER_INTID) = 0xa0;
++	b2l_gic_write(b2l_gicd, 0x100, sources);
++	b2l_gic_write(b2l_gicc, 0x004, 0xff); /* priority mask */
++	b2l_gic_write(b2l_gicc, 0x008, 0);    /* no priority grouping */
++	/* Non-secure bit0 is EnableGrp1; bit9 selects split EOI/deactivate.
++	 * Use combined EOI so GICC_EOIR deactivates as well as drops priority. */
++	b2l_gic_write(b2l_gicc, 0x000,
++	    (b2l_gic_read(b2l_gicc, 0x000) & ~(1U << 9)) | 1U);
++	b2l_gic_write(b2l_gicd, 0x000,
++	    b2l_gic_read(b2l_gicd, 0x000) | 1U);
++	__builtin_arm_dsb(DSB_SY);
++	__builtin_arm_isb(ISB_SY);
++	kprintf("B2L GIC: GICv2 IRQ ready, timer=%u, SGI=1, CNTFRQ=%llu Hz\n",
++	    B2L_TIMER_INTID, __builtin_arm_rsr64("CNTFRQ_EL0"));
++}
++#elif HAS_GIC_V3
+ #define GICR_WAKE_TIMEOUT_NS (1000000000ULL) // timeout for redistributor wakeup (default 1s)
+ MACHINE_TIMEOUT(gicr_wake_timeout_ns, "gicr-wake-timeout", GICR_WAKE_TIMEOUT_NS, MACHINE_TIMEOUT_UNIT_NSEC, NULL);
+ 
+diff --git a/pexpert/arm/pe_identify_machine.c b/pexpert/arm/pe_identify_machine.c
+index f5939d5..863907b 100644
+--- a/pexpert/arm/pe_identify_machine.c
++++ b/pexpert/arm/pe_identify_machine.c
+@@ -68,6 +68,23 @@ pe_identify_machine(boot_args * bootArgs)
+ 	/* Clear the gPEClockFrequencyInfo struct */
+ 	bzero((void *)&gPEClockFrequencyInfo, sizeof(clock_frequency_info_t));
+ 
++#if defined(B2L)
++	/* The architected counter is independent of CPU and bus DVFS clocks.
++	 * No Samsung clock driver is present yet: leave those unknown (zero)
++	 * rather than publish CNTFRQ as a fictitious CPU/bus frequency.  ARM
++	 * timebase callbacks consume timebase_frequency_hz directly. */
++	uint64_t counter_hz = __builtin_arm_rsr64("CNTFRQ_EL0");
++	if (counter_hz == 0 || counter_hz > UINT32_MAX) {
++		panic("B2L clock: invalid architected counter frequency");
++	}
++	gPEClockFrequencyInfo.timebase_frequency_hz = (uint32_t)counter_hz;
++	gPEClockFrequencyInfo.dec_clock_rate_hz = (uint32_t)counter_hz;
++	gPEClockFrequencyInfo.bus_clock_rate_den = 1;
++	gPEClockFrequencyInfo.bus_to_cpu_rate_den = 1;
++	gPEClockFrequencyInfo.bus_to_dec_rate_den = 1;
++	return;
++#endif
++
+ 	/* Start with default values. */
+ 	gPEClockFrequencyInfo.timebase_frequency_hz = 24000000;
+ 	gPEClockFrequencyInfo.bus_clock_rate_hz = 100000000;
+@@ -571,6 +588,7 @@ pe_arm_init_interrupts(void *args)
+ {
+ 	kprintf("pe_arm_init_interrupts: args: %p\n", args);
+ 
++#if !defined(B2L)
+ 	/* Set up mappings for interrupt controller and possibly timers (if they haven't been set up already) */
+ 	if (args != NULL) {
+ 		if (!pe_arm_map_interrupt_controller()) {
+@@ -578,6 +596,8 @@ pe_arm_init_interrupts(void *args)
+ 		}
+ 	}
+ 
++#endif
++	/* B2L uses CNTV_* architected registers; no MMIO timer block exists. */
+ 	return pe_arm_init_timer(args);
+ }
+ 
+diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
+index 93b1e78..15ee90c 100644
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -497,11 +497,18 @@ PE_create_console(void)
+ 	 */
+ 	check_for_panic_log();
+ 
++#if defined(B2L)
++	/* Research target: preserve the inherited display controller mode and
++	 * use XNU's normal text renderer.  There is no AppleCLCD/GPU driver. */
++	PE_initialize_console(&PE_state.video, kPETextMode);
++	PE_initialize_console(NULL, kPEAcquireScreen);
++#else
+ 	if (PE_state.video.v_display) {
+ 		PE_initialize_console(&PE_state.video, kPEGraphicsMode);
+ 	} else {
+ 		PE_initialize_console(&PE_state.video, kPETextMode);
+ 	}
++#endif
+ }
+ 
+ int
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index d9bef60..d23ab9a 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -26,6 +26,7 @@
+ #if defined __arm__
+ #include <arm/caches_internal.h>
+ #include <arm/machine_routines.h>
++#include <arm64/b2l_early.h>
+ #include <arm/proc_reg.h>
+ #include <pexpert/arm/board_config.h>
+ #include <vm/pmap.h>
+@@ -33,6 +34,7 @@
+ #include <pexpert/arm/consistent_debug.h>
+ #include <pexpert/arm64/board_config.h>
+ #include <arm64/proc_reg.h>
++#include <arm64/b2l_early.h>
+ #endif
+ #include <pexpert/arm/protos.h>
+ #include <kern/sched_prim.h>
+@@ -793,6 +795,23 @@ serial_hibernation_cleanup(void)
+ }
+ #endif /* HIBERNATION */
+ 
++#if defined(B2L)
++/* Output-only early console backed by the framebuffer supplied by firmware. */
++static void b2l_fb_serial_init(void) { }
++static unsigned int b2l_fb_transmit_ready(void) { return 1; }
++static void b2l_fb_transmit_data(uint8_t c) { b2l_early_putc((char)c); }
++static unsigned int b2l_fb_receive_ready(void) { return 0; }
++static uint8_t b2l_fb_receive_data(void) { return 0; }
++static struct pe_serial_functions b2l_fb_serial_functions = {
++	.init = b2l_fb_serial_init,
++	.transmit_ready = b2l_fb_transmit_ready,
++	.transmit_data = b2l_fb_transmit_data,
++	.receive_ready = b2l_fb_receive_ready,
++	.receive_data = b2l_fb_receive_data,
++	.device = SERIAL_B2L_FBCON
++};
++#endif
++
+ int
+ serial_init(void)
+ {
+@@ -805,6 +824,17 @@ serial_init(void)
+ 
+ 	struct pe_serial_functions *fns = gPESF;
+ 
++#if defined(B2L)
++	/* The firmware exposes a framebuffer, not an Apple UART device tree node. */
++	if (b2l_early_available()) {
++		if (!uart_initted) {
++			register_serial_functions(&b2l_fb_serial_functions);
++			uart_initted = true;
++		}
++		return 1;
++	}
++#endif
++
+ 	/**
+ 	 * Even if the serial devices have already been initialized on cold boot,
+ 	 * when coming out of a sleep/wake, they'll need to be re-initialized. Since
+diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
+index 195e88b..139ab19 100644
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -40,7 +40,8 @@ typedef enum serial_device {
+ 	SERIAL_DOCKCHANNEL=0x2,
+ 	SERIAL_PI3_UART=0x4,
+ 	SERIAL_VMAPPLE_UART=0x8,
+-	SERIAL_DCC_UART=0x10
++	SERIAL_DCC_UART=0x10,
++	SERIAL_B2L_FBCON=0x20
+ } serial_device_t;
+ 
+ kern_return_t serial_enable_irq(serial_device_t device);
+diff --git a/pexpert/pexpert/arm64/Makefile b/pexpert/pexpert/arm64/Makefile
+index 386ee7a..8e93e00 100644
+--- a/pexpert/pexpert/arm64/Makefile
++++ b/pexpert/pexpert/arm64/Makefile
+@@ -9,6 +9,7 @@ include $(MakeInc_def)
+ PRIVATE_DATAFILES = boot.h
+ 
+ PRIVATE_KERNELFILES = \
++	B2L.h \
+ 	AIC.h \
+ 	apple_arm64_common.h \
+ 	apple_arm64_regs.h \
+diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
+index 55d8790..904b19c 100644
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -72,6 +72,14 @@
+ #define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */
+ #endif  /* ARM64_BOARD_CONFIG_BCM2837 */
+ 
++#ifdef ARM64_BOARD_CONFIG_B2L
++#include <pexpert/arm64/B2L.h>
++#define MAX_L2_CLINE                   7
++#define MAX_CPUS                       1
++#define MAX_CPU_CLUSTERS               1
++#define NO_XNU_PLATFORM_ERROR_HANDLER  1
++#endif
++
+ #ifdef ARM64_BOARD_CONFIG_VMAPPLE
+ #include <pexpert/arm64/VMAPPLE.h>
+ 
