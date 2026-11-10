@@ -64,7 +64,8 @@ jobs:
           git -C "$D" fetch -q --depth 1 https://github.com/apple-oss-distributions/libdispatch.git 701f4d1a24ae9c6863901bbbb22624b7d1b87321
           git -C "$D" checkout -q FETCH_HEAD
           SDK_INCLUDE="$(xcrun --sdk iphoneos --show-sdk-path)/usr/include"
-          xcodebuild -project "$D/libdispatch.xcodeproj" -target libfirehose_kernel -configuration Release -sdk iphoneos -arch arm64 OBJROOT="$RUNNER_TEMP/firehose-obj" SYMROOT="$RUNNER_TEMP/firehose-sym" DSTROOT="$B2L_DEPSROOT" CODE_SIGNING_ALLOWED=NO OTHER_CFLAGS='$(inherited) -mcpu=generic -march=armv8-a+crypto' HEADER_SEARCH_PATHS="$B2L_DEPSROOT/usr/local/include/kernel $B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders $SDK_INCLUDE $D"
+          CLANG_INCLUDE="$(xcrun --sdk iphoneos clang -print-resource-dir)/include"
+          xcodebuild -project "$D/libdispatch.xcodeproj" -target libfirehose_kernel -configuration Release -sdk iphoneos -arch arm64 OBJROOT="$RUNNER_TEMP/firehose-obj" SYMROOT="$RUNNER_TEMP/firehose-sym" DSTROOT="$B2L_DEPSROOT" CODE_SIGNING_ALLOWED=NO OTHER_CFLAGS='$(inherited) -mcpu=generic -march=armv8-a+crypto' HEADER_SEARCH_PATHS="$B2L_DEPSROOT/usr/local/include/kernel $B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders $SDK_INCLUDE $CLANG_INCLUDE $D"
           test -f "$B2L_DEPSROOT/usr/local/lib/kernel/liblibfirehose_kernel.a"
           echo "B2L_DEPSROOT=$B2L_DEPSROOT" >> "$GITHUB_ENV"
       - name: Build the B2L development kernel
