@@ -670,6 +670,14 @@ index 5f16e91..dc9f2b3 100644
  
  DSYMUTIL_FLAGS = $(DSYMUTIL_FLAGS_GEN) \
  	$($(addsuffix $(CURRENT_ARCH_CONFIG),DSYMUTIL_FLAGS_))
+@@ -307,8 +307,7 @@ CFLAGS_GEN = $(DEBUG_CFLAGS) -nostdinc \
+ 	-ferror-limit=10000 \
+ 	-fno-builtin \
+ 	-fno-common \
+ 	-ftrivial-auto-var-init=zero \
+-	-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang \
+ 	-fsigned-bitfields \
+ 	-fmerge-all-constants \
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
 index 3c93b1c..0f47568 100644
 --- a/osfmk/arm/arm_init.c
