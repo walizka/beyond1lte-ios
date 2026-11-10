@@ -83,7 +83,7 @@ jobs:
           ditto "$KDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders" "$B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders"
           DISPATCH="$RUNNER_TEMP/libdispatch"
           git init -q "$DISPATCH"
-          git -C "$DISPATCH" fetch -q --depth 1 https://github.com/apple-oss-distributions/libdispatch.git 701f4d1a24ae9c6863901bbbb22624b7d1b87321
+          git -C "$DISPATCH" fetch -q --depth 1 https://github.com/apple-oss-distributions/libdispatch.git ca80d30
           git -C "$DISPATCH" checkout -q FETCH_HEAD
           SDK_INCLUDE="$(xcrun --sdk iphoneos --show-sdk-path)/usr/include"; CLANG_INCLUDE="$(xcrun --sdk iphoneos clang -print-resource-dir)/include"; XNU_HEADERS="$XNU_PATH/osfmk $XNU_PATH/bsd $XNU_PATH/libkern $XNU_PATH/iokit $XNU_PATH/libkern/firehose"
           xcodebuild -project "$DISPATCH/libdispatch.xcodeproj" -target libfirehose_kernel -configuration Release -sdk iphoneos -arch arm64 IPHONEOS_DEPLOYMENT_TARGET=15.6 \
