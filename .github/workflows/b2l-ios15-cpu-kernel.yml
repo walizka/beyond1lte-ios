@@ -64,8 +64,8 @@ jobs:
         run: |
           set -euo pipefail
           XNU_PATH="$GITHUB_WORKSPACE/xnu-ios15"
-          scripts/fetch-xnu-ios15.sh "$XNU_PATH"
-          scripts/prepare-xnu-ios15.sh "$XNU_PATH"
+          bash scripts/fetch-xnu-ios15.sh "$XNU_PATH"
+          bash scripts/prepare-xnu-ios15.sh "$XNU_PATH"
           mkdir -p "$B2L_DEPSROOT/usr/local/libexec"
           echo "B2L_DEPSROOT=$B2L_DEPSROOT" >> "$GITHUB_ENV"
           echo "XNU_PATH=$XNU_PATH" >> "$GITHUB_ENV"
@@ -100,7 +100,7 @@ jobs:
           XNU_PATH: ${{ github.workspace }}/xnu-ios15
         run: |
           set -euo pipefail
-          scripts/build-kernel-ios15.sh CWARNFLAGS=-w CXXWARNFLAGS=-w
+          bash bash scripts/build-kernel-ios15.sh CWARNFLAGS=-w CXXWARNFLAGS=-w
           mkdir -p out/ci-kernel-ios15
           find out/xnu-ios15 -type f -name 'kernel.development' -exec cp -n '{}' out/ci-kernel-ios15/ \; 2>/dev/null || true
           test -s out/ci-kernel-ios15/kernel.development
