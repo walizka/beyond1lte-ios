@@ -88,7 +88,7 @@ jobs:
           SDK_INCLUDE="$(xcrun --sdk iphoneos --show-sdk-path)/usr/include"; CLANG_INCLUDE="$(xcrun --sdk iphoneos clang -print-resource-dir)/include"; XNU_HEADERS="$XNU_PATH/osfmk $XNU_PATH/bsd $XNU_PATH/libkern $XNU_PATH/iokit $XNU_PATH/libkern/firehose"
           xcodebuild -project "$DISPATCH/libdispatch.xcodeproj" -target libfirehose_kernel -configuration Release -sdk iphoneos -arch arm64 IPHONEOS_DEPLOYMENT_TARGET=15.6 \
             OBJROOT="$RUNNER_TEMP/firehose-obj" SYMROOT="$RUNNER_TEMP/firehose-sym" DSTROOT="$B2L_DEPSROOT" \
-            CODE_SIGNING_ALLOWED=NO OTHER_CFLAGS='$(inherited) -mcpu=generic -march=armv8-a+crypto' \
+            CODE_SIGNING_ALLOWED=NO OTHER_CFLAGS='$(inherited) -mcpu=generic -march=armv8-a+crypto -D__improbable(x)=__builtin_expect(!!(x),0)' \
             HEADER_SEARCH_PATHS="$B2L_DEPSROOT/usr/local/include/kernel $B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders $SDK_INCLUDE $CLANG_INCLUDE $XNU_HEADERS $DISPATCH"
           test -f "$B2L_DEPSROOT/usr/local/lib/kernel/liblibfirehose_kernel.a"
 
