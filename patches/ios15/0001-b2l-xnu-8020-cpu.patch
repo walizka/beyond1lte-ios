@@ -670,7 +670,7 @@ index 5f16e91..dc9f2b3 100644
  
  DSYMUTIL_FLAGS = $(DSYMUTIL_FLAGS_GEN) \
  	$($(addsuffix $(CURRENT_ARCH_CONFIG),DSYMUTIL_FLAGS_))
-@@ -307,8 +307,7 @@ CFLAGS_GEN = $(DEBUG_CFLAGS) -nostdinc \
+@@ -307,7 +307,6 @@ CFLAGS_GEN = $(DEBUG_CFLAGS) -nostdinc \
  	-ferror-limit=10000 \
  	-fno-builtin \
  	-fno-common \
