@@ -100,7 +100,7 @@ jobs:
           XNU_PATH: ${{ github.workspace }}/xnu-ios15
         run: |
           set -euo pipefail
-          bash bash scripts/build-kernel-ios15.sh CWARNFLAGS=-w CXXWARNFLAGS=-w
+          bash scripts/build-kernel-ios15.sh CWARNFLAGS=-w CXXWARNFLAGS=-w
           mkdir -p out/ci-kernel-ios15
           find out/xnu-ios15 -type f -name 'kernel.development' -exec cp -n '{}' out/ci-kernel-ios15/ \; 2>/dev/null || true
           test -s out/ci-kernel-ios15/kernel.development
