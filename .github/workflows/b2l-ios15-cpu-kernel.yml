@@ -14,7 +14,8 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/b2l-ios15-cpu-kernel.yml'
-      - 'scripts/**'
+      - 'scripts/**'- name: Fetch and prepare iOS 15.6 XNU
+      
       - 'patches/ios15/**'
       - 'xnu-overlay/**'
       - 'common/smp/**'
@@ -57,6 +58,22 @@ jobs:
           KDKROOT="$(find /Library/Developer/KDKs -maxdepth 1 -type d -name "*${HOST_BUILD}*.kdk" -print -quit)"
           test -n "$KDKROOT"
           echo "KDKROOT=$KDKROOT" >> "$GITHUB_ENV"
+
+      - name: Stage Apple availability tools
+        env:
+          B2L_DEPSROOT: ${{ runner.temp }}/b2l-deps
+        run: |
+          set -euo pipefail
+          mkdir -p "$B2L_DEPSROOT/usr/local/libexec"
+          AV="$RUNNER_TEMP/AvailabilityVersions"
+          git init -q "$AV"
+          git -C "$AV" fetch -q --depth 1 https://github.com/apple-oss-distributions/AvailabilityVersions.git 149b1777f3e8c2133042d8e188f72e3adf6a7110
+          git -C "$AV" checkout -q FETCH_HEAD
+          mkdir -p "$RUNNER_TEMP/av-obj"
+          cmake -S "$AV" -B "$RUNNER_TEMP/av-build" -DSRCROOT="$AV" -DDSTROOT="$B2L_DEPSROOT" -DOBJROOT="$RUNNER_TEMP/av-obj" -DSYMROOT="$RUNNER_TEMP/av-sym" -DSYSTEM_PREFIX="" -DINSTALL_KERNEL_HEADERS=0 -DAV_VERSION=25.5.0
+          cmake --build "$RUNNER_TEMP/av-build" --parallel 2
+          cmake --install "$RUNNER_TEMP/av-build"
+          test -x "$B2L_DEPSROOT/usr/local/libexec/availability.pl"
 
       - name: Fetch and prepare iOS 15.6 XNU
         env:
