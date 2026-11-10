@@ -77,7 +77,20 @@ while IFS= read -r -d '' source_file; do
   fi
 done < <(find "$repo_root/xnu-overlay" -type f -print0)
 rsync -a "$repo_root/xnu-overlay/" "$xnu_path/"
-python3 "$repo_root/scripts/build-userspace-bootstrap.py" --output "$xnu_path/bsd/kern/b2l_userspace_payload.h"
+if [[ "${B2L_SKIP_USERSPACE_BOOTSTRAP:-0}" == 1 ]]; then
+  # Compile-only bring-up images must not embed a launcher/cache generated
+  # from a different iOS release. The helper is unavailable unless its
+  # explicit boot argument is set; keep valid, empty arrays for the build.
+  cat > "$xnu_path/bsd/kern/b2l_userspace_payload.h" <<'EOF'
+/* Compile-only image: no userspace bootstrap payload was staged. */
+static const unsigned char b2l_apps_executable[] = { 0 };
+static const unsigned char b2l_apps_job[] = { 0 };
+static const unsigned char b2l_apps_launch_cache[] = { 0 };
+EOF
+  echo "Prepared XNU without a userspace bootstrap payload"
+else
+  python3 "$repo_root/scripts/build-userspace-bootstrap.py" --output "$xnu_path/bsd/kern/b2l_userspace_payload.h"
+fi
 for source_file in "$repo_root/common/cache/"*; do
   destination="$xnu_path/bsd/kern/$(basename "$source_file")"
   if [[ -f "$destination" ]] && ! cmp -s "$source_file" "$destination"; then
