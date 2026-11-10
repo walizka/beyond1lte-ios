@@ -816,7 +816,7 @@ index a629f23..e702dda 100644
  EXPORT_MD_DIR = arm64
  
  INSTALL_MD_DIR = arm64
-+	b2l_early.h \
++EXPORT_MD_LIST += b2l_early.h
  
  include $(MakeInc_rule)
  include $(MakeInc_dir)
