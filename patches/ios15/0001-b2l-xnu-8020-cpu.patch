@@ -633,9 +633,9 @@ index 5f16e91..dc9f2b3 100644
  	-Wl,-rename_section,__HIB,__text,__TEXT_EXEC,__hib_text \
  	\
  	-Wl,-rename_section,__HIB,__const,__DATA_CONST,__hib_const \
-+ifneq ($(B2L_DEPSROOT),)
-+LDFLAGS_KERNEL_SDK := -L$(B2L_DEPSROOT)/usr/local/lib/kernel $(LDFLAGS_KERNEL_SDK)
-+endif
++	$(if $(B2L_DEPSROOT),-L$(B2L_DEPSROOT)/usr/local/lib/kernel,) \
++	$(if $(B2L_DEPSROOT),,) \
++	$(if $(B2L_DEPSROOT),,) \
  	-Wl,-rename_section,__HIB,__cstring,__DATA_CONST,__hib_const \
  	-Wl,-rename_section,__HIB,__literal8,__DATA_CONST,__hib_const \
  	-Wl,-rename_section,__HIB,__literal16,__DATA_CONST,__hib_const \
