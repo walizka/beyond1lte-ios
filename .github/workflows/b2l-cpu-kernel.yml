@@ -57,6 +57,8 @@ jobs:
           python3 scripts/stage-hfs.py "$GITHUB_WORKSPACE/xnu"
           ditto "$KDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders" "$B2L_DEPSROOT/usr/local/include/kernel"
           ditto "$KDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders" "$B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders"
+          mkdir -p "$B2L_DEPSROOT/usr/local/include/kernel/os"
+          cp "$GITHUB_WORKSPACE/xnu"/libkern/os/*.h "$B2L_DEPSROOT/usr/local/include/kernel/os/"
           D="$RUNNER_TEMP/libdispatch"
           git init -q "$D"
           git -C "$D" fetch -q --depth 1 https://github.com/apple-oss-distributions/libdispatch.git 701f4d1a24ae9c6863901bbbb22624b7d1b87321
