@@ -11,39 +11,74 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare Apple build tools
+      - name: Check Apple toolchain
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
-      - name: Build the CPU kernel
+      - name: Install matching Kernel Debug Kit
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "$RUNNER_TEMP/kdk-url"
+          import json, urllib.request
+          entries = json.load(urllib.request.urlopen('https://raw.githubusercontent.com/dortania/KdkSupportPkg/gh-pages/manifest.json'))
+          print(next(x['url'] for x in entries if x['name'] == 'Kernel Debug Kit 26.5 build 25F71'))
+          PY
+          curl -fL --retry 3 "$(cat "$RUNNER_TEMP/kdk-url")" -o "$RUNNER_TEMP/kdk.dmg"
+          mkdir -p "$RUNNER_TEMP/kdk-mount"
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/kdk-mount" "$RUNNER_TEMP/kdk.dmg"
+          for pkg in "$RUNNER_TEMP/kdk-mount"/*.pkg; do [ -e "$pkg" ] && sudo installer -pkg "$pkg" -target /; done
+          hdiutil detach "$RUNNER_TEMP/kdk-mount"
+          KDKROOT=$(find /Library/Developer/KDKs -maxdepth 1 -type d -name '*25F71*.kdk' -print -quit)
+          test -n "$KDKROOT"
+          echo "KDKROOT=$KDKROOT" >> "$GITHUB_ENV"
+      - name: Prepare pinned sources and dependencies
         env:
           B2L_SKIP_USERSPACE_BOOTSTRAP: '1'
-          BUILD_JOBS: '2'
-          BUILD_MEMORY_BYTES: '8589934592'
         run: |
           set -euo pipefail
           export B2L_DEPSROOT="$RUNNER_TEMP/b2l-deps"
           mkdir -p "$B2L_DEPSROOT/usr/local/libexec" "$B2L_DEPSROOT/usr/local/include/kernel" "$B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders"
-          A="$RUNNER_TEMP/AvailabilityVersions"
-          git init -q "$A"
-          git -C "$A" fetch -q --depth 1 https://github.com/apple-oss-distributions/AvailabilityVersions.git 149b1777f3e8c2133042d8e188f72e3adf6a7110
-          git -C "$A" checkout -q FETCH_HEAD
-          cmake -S "$A" -B "$RUNNER_TEMP/av-build" -DCMAKE_INSTALL_PREFIX="$B2L_DEPSROOT/usr/local"
+          AV="$RUNNER_TEMP/AvailabilityVersions"
+          git init -q "$AV"
+          git -C "$AV" fetch -q --depth 1 https://github.com/apple-oss-distributions/AvailabilityVersions.git 149b1777f3e8c2133042d8e188f72e3adf6a7110
+          git -C "$AV" checkout -q FETCH_HEAD
+          cmake -S "$AV" -B "$RUNNER_TEMP/av-build" -DSRCROOT="$AV" -DDSTROOT="$B2L_DEPSROOT" -DOBJROOT="$RUNNER_TEMP/av-obj" -DSYMROOT="$RUNNER_TEMP/av-sym" -DSYSTEM_PREFIX="" -DINSTALL_KERNEL_HEADERS=0
           cmake --build "$RUNNER_TEMP/av-build" --parallel 2
           cmake --install "$RUNNER_TEMP/av-build"
-          cp "$A/availability.pl" "$B2L_DEPSROOT/usr/local/libexec/availability.pl"
+          cp "$AV/availability.pl" "$B2L_DEPSROOT/usr/local/libexec/availability.pl"
           scripts/fetch-xnu.sh "$GITHUB_WORKSPACE/xnu"
           scripts/prepare-xnu.sh "$GITHUB_WORKSPACE/xnu"
+          export B2L_DEPSROOT
           python3 scripts/stage-libpthread.py "$GITHUB_WORKSPACE/xnu"
           python3 scripts/stage-bearssl.py "$GITHUB_WORKSPACE/xnu"
           python3 scripts/stage-hfs.py "$GITHUB_WORKSPACE/xnu"
+          ditto "$KDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders" "$B2L_DEPSROOT/usr/local/include/kernel"
+          ditto "$KDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders" "$B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders"
+          D="$RUNNER_TEMP/libdispatch"
+          git init -q "$D"
+          git -C "$D" fetch -q --depth 1 https://github.com/apple-oss-distributions/libdispatch.git 701f4d1a24ae9c6863901bbbb22624b7d1b87321
+          git -C "$D" checkout -q FETCH_HEAD
+          xcodebuild -project "$D/libdispatch.xcodeproj" -target libfirehose_kernel -configuration Release -sdk iphoneos -arch arm64 OBJROOT="$RUNNER_TEMP/firehose-obj" SYMROOT="$RUNNER_TEMP/firehose-sym" DSTROOT="$B2L_DEPSROOT" CODE_SIGNING_ALLOWED=NO OTHER_CFLAGS='$(inherited) -mcpu=generic -march=armv8-a+crypto' HEADER_SEARCH_PATHS="$B2L_DEPSROOT/usr/local/include/kernel $B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders $D"
+          test -f "$B2L_DEPSROOT/usr/local/lib/kernel/liblibfirehose_kernel.a"
+          echo "B2L_DEPSROOT=$B2L_DEPSROOT" >> "$GITHUB_ENV"
+      - name: Build the B2L development kernel
+        env:
+          B2L_SKIP_USERSPACE_BOOTSTRAP: '1'
+          B2L_DEPSROOT: ${{ runner.temp }}/b2l-deps
+          BUILD_JOBS: '2'
+          BUILD_MEMORY_BYTES: '8589934592'
+        run: |
+          set -euo pipefail
           scripts/build-kernel.sh CWARNFLAGS=-w CXXWARNFLAGS=-w
           mkdir -p out/ci-kernel
-          find out/xnu -type f -name kernel.development -exec cp '{}' out/ci-kernel/ \
+          find out/xnu -type f -path '*/System/Library/Kernels/*' -name 'kernel.development' -exec cp '{}' out/ci-kernel/ \;
+          find out/xnu -type f -name 'kernel.development' -exec cp -n '{}' out/ci-kernel/ \; 2>/dev/null || true
           test -s out/ci-kernel/kernel.development
+          file out/ci-kernel/kernel.development
           shasum -a 256 out/ci-kernel/kernel.development > out/ci-kernel/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: beyond1lte-cpu-kernel
           path: out/ci-kernel/
           if-no-files-found: error
+          retention-days: 7
