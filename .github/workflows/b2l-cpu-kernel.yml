@@ -1,0 +1,49 @@
+name: B2L CPU kernel build
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  kernel:
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare Apple build tools
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - name: Build the CPU kernel
+        env:
+          B2L_SKIP_USERSPACE_BOOTSTRAP: '1'
+          BUILD_JOBS: '2'
+          BUILD_MEMORY_BYTES: '8589934592'
+        run: |
+          set -euo pipefail
+          export B2L_DEPSROOT="$RUNNER_TEMP/b2l-deps"
+          mkdir -p "$B2L_DEPSROOT/usr/local/libexec" "$B2L_DEPSROOT/usr/local/include/kernel" "$B2L_DEPSROOT/System/Library/Frameworks/Kernel.framework/PrivateHeaders"
+          A="$RUNNER_TEMP/AvailabilityVersions"
+          git init -q "$A"
+          git -C "$A" fetch -q --depth 1 https://github.com/apple-oss-distributions/AvailabilityVersions.git 149b1777f3e8c2133042d8e188f72e3adf6a7110
+          git -C "$A" checkout -q FETCH_HEAD
+          cmake -S "$A" -B "$RUNNER_TEMP/av-build" -DCMAKE_INSTALL_PREFIX="$B2L_DEPSROOT/usr/local"
+          cmake --build "$RUNNER_TEMP/av-build" --parallel 2
+          cmake --install "$RUNNER_TEMP/av-build"
+          cp "$A/availability.pl" "$B2L_DEPSROOT/usr/local/libexec/availability.pl"
+          scripts/fetch-xnu.sh "$GITHUB_WORKSPACE/xnu"
+          scripts/prepare-xnu.sh "$GITHUB_WORKSPACE/xnu"
+          python3 scripts/stage-libpthread.py "$GITHUB_WORKSPACE/xnu"
+          python3 scripts/stage-bearssl.py "$GITHUB_WORKSPACE/xnu"
+          python3 scripts/stage-hfs.py "$GITHUB_WORKSPACE/xnu"
+          scripts/build-kernel.sh CWARNFLAGS=-w CXXWARNFLAGS=-w
+          mkdir -p out/ci-kernel
+          find out/xnu -type f -name kernel.development -exec cp '{}' out/ci-kernel/ \
+          test -s out/ci-kernel/kernel.development
+          shasum -a 256 out/ci-kernel/kernel.development > out/ci-kernel/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beyond1lte-cpu-kernel
+          path: out/ci-kernel/
+          if-no-files-found: error
