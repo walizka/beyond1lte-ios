@@ -14,7 +14,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/b2l-ios15-cpu-kernel.yml'
-      - 'scripts/**'- name: Fetch and prepare iOS 15.6 XNU
+      - 'scripts/**'
       
       - 'patches/ios15/**'
       - 'xnu-overlay/**'
